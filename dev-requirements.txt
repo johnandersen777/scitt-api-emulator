@@ -1,6 +1,7 @@
 pyOpenSSL
 pytest
 myst-parser
+jsonschema
 requests==2.28
 requests-toolbelt==0.9
 urllib3<2.0.0
