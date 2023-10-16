@@ -11,6 +11,23 @@
 - https://codeberg.org/bovine/bovine
   - Most of the tools need to be run from the directory with the SQLite database in them (`bovine.sqlite3`)
 - https://bovine-herd.readthedocs.io/en/latest/deployment.html
+  - Bovine and associated libraries **require Python 3.11 or greater!!!**
+
+```console
+$ python --version
+Python 3.11.5
+```
+
+```console
+python -m venv .venv && \
+. .venv/bin/activate && \
+pip install -U pip setuptools wheel && \
+pip install \
+  toml \
+  bovine{-store,-process,-pubsub,-herd,-tool} \
+  'https://codeberg.org/pdxjohnny/bovine/archive/activitystreams_collection_helper_enable_multiple_iterations.tar.gz#egg=bovine&subdirectory=bovine' \
+  'https://codeberg.org/pdxjohnny/mechanical_bull/archive/event_loop_on_connect_call_handlers.tar.gz#egg=mechanical-bull'
+```
 
 ```python
 from quart import Quart
@@ -35,7 +52,7 @@ $ hypercorn app:app
 ```console
 $ export HANDLE_NAME=alice
 $ export BOVINE_NAME=$(python -m bovine_tool.register "${HANDLE_NAME}" --domain http://localhost:8000 | awk '{print $NF}')
-$ echo $BOVINE_NAME 
+$ echo $BOVINE_NAME
 alice_80cde26c-e4a7-4941-95ed-77cf8af14810
 $ sqlite3 bovine.sqlite3 "SELECT * FROM bovineactor;"
 1|__bovine__application_actor__|bovine|{}|2023-10-15 18:37:25.678942+00:00|2023-10-15 18:37:25.678976+00:00
@@ -111,23 +128,39 @@ export BOVINE_NAME=$(sqlite3 -csv bovine.sqlite3 "SELECT bovine_name FROM bovine
 ```
 
 - Let's add that key so mechanical bull can start accepting follow requests
-
-```console
-$ env | grep _NAME
-HANDLE_NAME=alice
-BOVINE_NAME=alice_ef9f4b50-34f8-4190-bc4a-5f48f50e78e7
-$ python -m bovine_tool.manage "${BOVINE_NAME}" --did_key key0 $(cat config.toml | python -c 'import sys, tomllib; print(tomllib.load(sys.stdin.buffer)[sys.argv[-1]]["secret"])' "${HANDLE_NAME}")
-```
-
-- We need to add the public portion of the key, be sure to convert from the private form if you extract from the `toml` file.
+  - We need to add the public portion of the key, be sure to convert from the private form if you extract from the `toml` file.
 
 ```console
 $ python -m bovine_tool.manage "${BOVINE_NAME}" --did_key key0 $(cat config.toml | python -c 'import sys, tomllib, bovine.crypto; print(bovine.crypto.private_key_to_did_key(tomllib.load(sys.stdin.buffer)[sys.argv[-1]]["secret"]))' "${HANDLE_NAME}")
 $ sqlite3 -header -csv bovine.sqlite3 "SELECT * FROM bovineactorkeypair WHERE name='key0';" 
 id,name,private_key,public_key,bovine_actor_id
 4,key0,"",did:key:did:key:z6MkeyGwWnSn1DFxm48HJ6L7j9m1vxYniEseGRY46fKHu6v4,1
-$ python -m mechanical_bull.run
+```
+
+- Within the file `scitt_handler.py` we've defined our demo handler
+  - We need to enable it within the mechanical bull config file (`config.toml`)
+    before we run mechanical bull.
+
+```console
+$ python -c 'import sys, pathlib, toml; path = pathlib.Path(sys.argv[-3]); obj = toml.loads(path.read_text()); obj[sys.argv[-2]]["handlers"][sys.argv[-1]] = True; path.write_text(toml.dumps(obj))' config.toml "${HANDLE_NAME}" scitt_handler
+```
+
+- Now we run the automations for our client actor (Alice) via mechanical bull.
+
+```console
+$ PYTHONPATH=$PYTHONPATH:$PWD python -m mechanical_bull.run
 INFO:mechanical_bull.event_loop:Connected
+INFO:root:/home/pdxjohnny/Documents/fediverse/bovine/hacking/scitt_handler.py:handle(handler_event=HandlerEvent.OPENED)
+client: BovineClient(actor_id='http://localhost:8000/endpoints/KUMjPaGP8Ei1eXoy3udib5uLirzABP8YqAdD8yysrDI', public_key_url=None, access_token=None, secret='z3u2aZCG3JJQrsn7fcH9ZeRrod6NGUBdbWnptgYFsQtXWVXy', domain='http://localhost:8000', client=<bovine.clients.moo_auth.MooAuthClient object at 0x7f3f59907350>, session=<aiohttp.client.ClientSession object at 0x7f3f5b0a0f90>)
+outbox: <bovine.activitystreams.collection_helper.CollectionHelper object at 0x7f3f5a5065d0>
+Begin iteration 0 over outbox
+End iteration 0 over outbox
+No messages in outbox, creating activity
+creating activity: {'@context': 'https://www.w3.org/ns/activitystreams', 'type': 'Announce', 'actor': 'http://localhost:8000/endpoints/KUMjPaGP8Ei1eXoy3udib5uLirzABP8YqAdD8yysrDI', 'to': ['https://www.w3.org/ns/activitystreams#Public'], 'cc': ['http://localhost:8000/endpoints/aT4gehUFZzgc1sf_UNosuO-Fyle1eN2D6NBLviXMtzs']}
+created activity: {'@context': 'https://www.w3.org/ns/activitystreams', 'type': 'Announce', 'actor': 'http://localhost:8000/endpoints/KUMjPaGP8Ei1eXoy3udib5uLirzABP8YqAdD8yysrDI', 'to': ['https://www.w3.org/ns/activitystreams#Public'], 'cc': ['http://localhost:8000/endpoints/aT4gehUFZzgc1sf_UNosuO-Fyle1eN2D6NBLviXMtzs']}
+Begin iteration 1 over outbox
+Iteration 1 Message 1 in outbox: {'@context': 'about:bovine', 'actor': {'id': 'http://localhost:8000/endpoints/KUMjPaGP8Ei1eXoy3udib5uLirzABP8YqAdD8yysrDI', 'inbox': 'http://localhost:8000/endpoints/qGqejyzZnUBXL5vpPh5MKlXW2SktpkERFBqfHnp70MQ', 'name': 'alice', 'outbox': 'http://localhost:8000/endpoints/g5PJ-7QJ58p0aMHn3h1m0SnokPPtO6myZ1otwwV0no4', 'preferredUsername': 'alice', 'publicKey': 'http://localhost:8000/endpoints/KUMjPaGP8Ei1eXoy3udib5uLirzABP8YqAdD8yysrDI#serverKey', 'type': 'Person'}, 'cc': ['http://localhost:8000/endpoints/aT4gehUFZzgc1sf_UNosuO-Fyle1eN2D6NBLviXMtzs'], 'id': 'http://localhost:8000/objects/0a8fa278-c079-421e-87f8-76bd2dfb8cf8', 'to': ['as:Public'], 'type': 'Announce'}
+End iteration 1 over outbox
 ```
 
 [![asciicast](https://asciinema.org/a/614553.svg)](https://asciinema.org/a/614553)
