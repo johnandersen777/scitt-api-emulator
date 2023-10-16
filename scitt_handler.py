@@ -47,11 +47,48 @@ async def handle(
     min_o=4,
     max_o=20,
     handler_event: HandlerEvent = None,
-    handler_api_version: HandlerAPIVersion = HandlerAPIVersion.v0_2_6,
+    handler_api_version: HandlerAPIVersion = HandlerAPIVersion.unstable,
 ):
     logging.info(f"{__file__}:handle(handler_event={handler_event})")
     match handler_event:
         case HandlerEvent.OPENED:
+            # TODO Channel to communicate / recv events for publish from SCITT
+            # asyncio.create_task(watch_for_scitt_events())
+            # The following example is from: https://codeberg.org/bovine/mechanical_bull/src/commit/a13fc7d3d04629eeb72f3b2f0fa976e52860de68/mechanical_bull/actions/announce.py#L58
+            print("client:", client)
+            outbox = client.outbox()
+            print("outbox:", outbox)
+
+            """
+            outbox_as_collection = await outbox.as_collection()
+            print("outbox_as_collection:", repr(outbox_as_collection))
+            print("type(outbox_as_collection):", type(outbox_as_collection))
+            print("len(outbox_as_collection.items):", len(outbox_as_collection["items"]))
+            if not outbox_as_collection["items"]:
+                activity = client.activity_factory.announce({}).as_public().build()
+                print("creating activity:", activity)
+                await client.send_to_outbox(activity)
+                print("created activity:", activity)
+            count_messages = 0
+            print("Begin iteration over outbox_as_collection")
+            for message in outbox_as_collection["items"]:
+                count_messages += 1
+                print(f"Message {count_messages} in outbox_as_collection:", message)
+            print("End iteration over outbox_as_collection")
+            """
+
+            for i in range(0, 2):
+                print(f"Begin iteration {i} over outbox")
+                count_messages = 0
+                async for message in outbox:
+                    count_messages += 1
+                    print(f"Iteration {i} Message {count_messages} in outbox:", message)
+                print(f"End iteration {i} over outbox")
+                # NOTE Is this a bovine bug? We have to create a new instance of
+                # the outbox in order to iterate over it again. If we don't then
+                # any iteration after the first round through the loop don't
+                # have any prints in the body above
+                # outbox = client.outbox()
             return
         case HandlerEvent.CLOSED:
             return
