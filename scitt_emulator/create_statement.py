@@ -83,17 +83,41 @@ def create_claim(
     if private_key_pem_path and private_key_pem_path.exists():
         cwt_cose_key = cwt.COSEKey.from_pem(private_key_pem_path.read_bytes())
     else:
-        # cwt_cose_key = cwt.COSEKey.generate_symmetric_key(alg=alg, kid=kid)
+        import subprocess
         subprocess.check_call(
             [
-                "bash"
+                "bash",
                 "-c",
                 f"ssh-keygen -q -f /dev/stdout -t ecdsa -b 384 -N '' -I {kid} <<<y 2>/dev/null | python -c 'import sys; from cryptography.hazmat.primitives import serialization; print(serialization.load_ssh_private_key(sys.stdin.buffer.read(), password=None).private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption()).decode().rstrip())' > {private_key_pem_path}",
             ]
         )
         cwt_cose_key = cwt.COSEKey.from_pem(private_key_pem_path.read_bytes())
-    cwt_cose_key_to_cose_key = cwt_cose_key.to_dict()
-    sign1_message_key = pycose.keys.ec2.EC2Key.from_dict(cwt_cose_key_to_cose_key)
+    # cwt_cose_key = cwt.COSEKey.generate_ec2_key(alg=alg, kid=kid)
+    import pprint
+    cwt_ec2_key_as_dict = cwt_cose_key.to_dict()
+    pprint.pprint(cwt_ec2_key_as_dict)
+    import pprint
+    import inspect
+    cose_tags = {
+        member.identifier: member.fullname
+        for _member_name, member in inspect.getmembers(pycose.headers)
+        if (
+            hasattr(member, "identifier")
+            and hasattr(member, "fullname")
+        )
+    }
+    pprint.pprint(cose_tags)
+    cwt_ec2_key_as_dict_labeled = {
+        cose_tags.get(key, key): value
+        for key, value in cwt_ec2_key_as_dict.items()
+    }
+    # print("cwt_ec2_key_as_dict_labeled['STATIC_KEY_ID']", cwt_ec2_key_as_dict_labeled['CRITICAL'])
+    pprint.pprint(cwt_ec2_key_as_dict)
+    pprint.pprint(cwt_ec2_key_as_dict_labeled)
+    pycose_cose_key = pycose.keys.ec2.EC2Key.from_dict(cwt_ec2_key_as_dict)
+    # pycose_cose_key.kid = cwt_ec2_key_as_dict_labeled['CRITICAL']
+    # cwt_cose_key._kid = pycose_cose_key.kid
+    sign1_message_key = pycose.keys.ec2.EC2Key.from_dict(cwt_ec2_key_as_dict)
 
     # CWT_Claims (label: 14 pending [CWT_CLAIM_COSE]): A CWT representing
     # the Issuer (iss) making the statement, and the Subject (sub) to
@@ -109,11 +133,14 @@ def create_claim(
         # chosen by the Issuer
         # Example: github.com/opensbom-generator/spdx-sbom-generator/releases/tag/v0.0.13
         #   2 => tstr; sub, the subject of the statements,
-        2: "asdflkajsdflkjsadflkj" + subject,
+        2: subject,
         #   * tstr => any
     }
     # }
     cwt_token = cwt.encode(cwt_claims, cwt_cose_key)
+    print(cwt.decode(cwt_token , cwt_cose_key))
+    import sys
+    sys.exit(0)
 
     # Protected_Header = {
     protected = {

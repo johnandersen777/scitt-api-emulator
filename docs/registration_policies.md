@@ -203,12 +203,11 @@ for cryptography_ssh_key in cryptography_ssh_keys:
     )
 
 for jwk_key in jwk_keys:
-    print(jwk_key, "kid=", jwk_key.thumbprint())
     cwt_cose_key = cwt.COSEKey.from_pem(
         jwk_key.export_to_pem(),
-        kid=jwk_key.thumbprint(),
+        kid=jwk_key.kid,
     )
-    cwt_cose_keys.append(cwt_cose_key)
+    # cwt_cose_keys.append(cwt_cose_key)
 
 for cwt_cose_key in cwt_cose_keys:
     cwt_ec2_key_as_dict = cwt_cose_key.to_dict()
@@ -232,7 +231,7 @@ for cwt_cose_key in cwt_cose_keys:
     pprint.pprint(cwt_ec2_key_as_dict_labeled)
     pycose_cose_key = pycose.keys.ec2.EC2Key.from_dict(cwt_ec2_key_as_dict)
     pycose_cose_key.kid = cwt_ec2_key_as_dict_labeled['CRITICAL']
-    # cwt_cose_key.kid = cwt_ec2_key_as_dict_labeled['CRITICAL']
+    cwt_cose_key._kid = pycose_cose_key.kid
     pycose_cose_keys.append(pycose_cose_key)
 
 verify_signature = False
@@ -241,13 +240,16 @@ for pycose_cose_key in pycose_cose_keys:
         msg.key = pycose_cose_key
         verify_signature = msg.verify_signature()
         if verify_signature:
+            # msg.kid = pycose_cose_key.kid
             break
-            msg.kid = pycose_cose_key.kid
 
 unittest.TestCase().assertTrue(
     verify_signature,
     "Failed to verify signature on statement",
 )
+
+pprint.pprint(pycose_cose_keys)
+pprint.pprint(cwt_cose_keys)
 
 cwt_protected = cwt.decode(msg.phdr[CWTClaims], cwt_cose_keys)
 issuer = cwt_protected[1]
