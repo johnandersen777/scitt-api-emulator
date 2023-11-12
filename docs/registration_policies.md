@@ -142,6 +142,9 @@ if unverified_issuer.startswith("did:web:"):
 
 # Load keys from issuer
 jwk_keys = []
+cryptography_ssh_keys = []
+cwt_cose_keys = []
+pycose_cose_keys = []
 
 import urllib.request
 import urllib.parse
@@ -149,7 +152,6 @@ import urllib.parse
 # TODO did:web: -> URL
 from cryptography.hazmat.primitives import serialization
 
-cryptography_ssh_keys = []
 if "://" in unverified_issuer and not unverified_issuer.startswith("file://"):
     # TODO Logging for URLErrors
     # Check if OIDC issuer
@@ -166,10 +168,16 @@ if "://" in unverified_issuer and not unverified_issuer.startswith("file://"):
                     if response.status == 200:
                         jwks = json.loads(response.read())
                         for jwk_key_as_dict in jwks["keys"]:
+                            """
                             jwk_key_as_string = json.dumps(jwk_key_as_dict)
                             jwk_keys.append(
                                 jwcrypto.jwk.JWK.from_json(jwk_key_as_string),
                             )
+                            """
+                            cwt_cose_key = cwt.COSEKey.from_jwk(
+                                jwk_key_as_dict
+                            )
+                            cwt_cose_keys.append(cwt_cose_key)
 
     # Try loading ssh keys. Example: https://github.com/username.keys
     with contextlib.suppress(urllib.request.URLError):
@@ -194,17 +202,37 @@ for cryptography_ssh_key in cryptography_ssh_keys:
         )
     )
 
-cwt_cose_keys = []
-pycose_cose_keys = []
-
 for jwk_key in jwk_keys:
+    print(jwk_key, "kid=", jwk_key.thumbprint())
     cwt_cose_key = cwt.COSEKey.from_pem(
         jwk_key.export_to_pem(),
         kid=jwk_key.thumbprint(),
     )
     cwt_cose_keys.append(cwt_cose_key)
+
+for cwt_cose_key in cwt_cose_keys:
     cwt_ec2_key_as_dict = cwt_cose_key.to_dict()
+    import pprint
+    import inspect
+    cose_tags = {
+        member.identifier: member.fullname
+        for _member_name, member in inspect.getmembers(pycose.headers)
+        if (
+            hasattr(member, "identifier")
+            and hasattr(member, "fullname")
+        )
+    }
+    pprint.pprint(cose_tags)
+    cwt_ec2_key_as_dict_labeled = {
+        cose_tags.get(key, key): value
+        for key, value in cwt_ec2_key_as_dict.items()
+    }
+    print("cwt_ec2_key_as_dict_labeled['STATIC_KEY_ID']", cwt_ec2_key_as_dict_labeled['CRITICAL'])
+    pprint.pprint(cwt_ec2_key_as_dict)
+    pprint.pprint(cwt_ec2_key_as_dict_labeled)
     pycose_cose_key = pycose.keys.ec2.EC2Key.from_dict(cwt_ec2_key_as_dict)
+    pycose_cose_key.kid = cwt_ec2_key_as_dict_labeled['CRITICAL']
+    # cwt_cose_key.kid = cwt_ec2_key_as_dict_labeled['CRITICAL']
     pycose_cose_keys.append(pycose_cose_key)
 
 verify_signature = False
@@ -214,6 +242,7 @@ for pycose_cose_key in pycose_cose_keys:
         verify_signature = msg.verify_signature()
         if verify_signature:
             break
+            msg.kid = pycose_cose_key.kid
 
 unittest.TestCase().assertTrue(
     verify_signature,
@@ -270,14 +299,17 @@ $ scitt-emulator server --workspace workspace/ --tree-alg CCF --use-lro
 ```
 
 The current emulator notary (create-statement) implementation will sign
-statements using a generated key or a key we provide via the `--private-key-pem`
-argument. If we provide the `--private-key-pem` argument but the key at the
-given path does not exist, the generated key will be written out to that path.
+statements using a generated ephemeral key or a key we provide via the
+`--private-key-pem` argument.
+
+Since we need to export the key for verification by the policy engine, we will
+first generate it using `ssh-keygen`.
 
 ```console
-$ export ISSUER_PORT="9000" && \
-  export ISSUER_URL="http://localhost:${ISSUER_PORT}"
-$ scitt-emulator client create-claim \
+$ export ISSUER_PORT="9000" \
+  && export ISSUER_URL="http://localhost:${ISSUER_PORT}" \
+  && ssh-keygen -q -f /dev/stdout -t ecdsa -b 384 -N '' -I $RANDOM <<<y 2>/dev/null | python -c 'import sys; from cryptography.hazmat.primitives import serialization; print(serialization.load_ssh_private_key(sys.stdin.buffer.read(), password=None).private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption()).decode().rstrip())' > private-key.pem \
+  && scitt-emulator client create-claim \
     --private-key-pem private-key.pem \
     --issuer "${ISSUER_URL}" \
     --subject "solar" \
