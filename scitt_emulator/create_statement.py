@@ -76,22 +76,21 @@ def create_claim(
     # RSA: public_exponent(int), size(int)
     # EC: crv(str) (one of P-256, P-384, P-521, secp256k1)
     # OKP: crv(str) (one of Ed25519, Ed448, X25519, X448)
-    import hashlib
-    kid_hash = hashlib.sha256()
-    kid_hash.update(str(uuid.uuid4()).encode())
-    kid = kid_hash.hexdigest()
-    if private_key_pem_path and private_key_pem_path.exists():
-        cwt_cose_key = cwt.COSEKey.from_pem(private_key_pem_path.read_bytes())
-    else:
+    if private_key_pem_path and not private_key_pem_path.exists():
         import subprocess
         subprocess.check_call(
             [
                 "bash",
                 "-c",
-                f"ssh-keygen -q -f /dev/stdout -t ecdsa -b 384 -N '' -I {kid} <<<y 2>/dev/null | python -c 'import sys; from cryptography.hazmat.primitives import serialization; print(serialization.load_ssh_private_key(sys.stdin.buffer.read(), password=None).private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption()).decode().rstrip())' > {private_key_pem_path}",
+                f"ssh-keygen -q -f /dev/stdout -t ecdsa -b 384 -N '' <<<y 2>/dev/null | python -c 'import sys; from cryptography.hazmat.primitives import serialization; print(serialization.load_ssh_private_key(sys.stdin.buffer.read(), password=None).private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption()).decode().rstrip())' > {private_key_pem_path}",
             ]
         )
-        cwt_cose_key = cwt.COSEKey.from_pem(private_key_pem_path.read_bytes())
+    private_key_pem = private_key_pem_path.read_bytes()
+    import hashlib
+    kid_hash = hashlib.sha384()
+    kid_hash.update(private_key_pem)
+    kid = kid_hash.hexdigest()
+    cwt_cose_key = cwt.COSEKey.from_pem(private_key_pem, kid=kid)
     # cwt_cose_key = cwt.COSEKey.generate_ec2_key(alg=alg, kid=kid)
     import pprint
     cwt_ec2_key_as_dict = cwt_cose_key.to_dict()
@@ -139,8 +138,6 @@ def create_claim(
     # }
     cwt_token = cwt.encode(cwt_claims, cwt_cose_key)
     print(cwt.decode(cwt_token , cwt_cose_key))
-    import sys
-    sys.exit(0)
 
     # Protected_Header = {
     protected = {
