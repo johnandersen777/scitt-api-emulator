@@ -165,6 +165,11 @@ def create_flask_app_oidc_server(config):
     app.config.update(dict(DEBUG=True))
     app.config.update(config)
 
+    if not isinstance(app.config["key"], jwcrypto.jwk.JWK):
+        key_pem = app.config["key"]
+        app.config["key"] = jwcrypto.jwk.JWK()
+        app.config["key"].import_from_pem(key_pem)
+
     # TODO For testing ssh key style issuers, not OIDC related needs to be moved
     @app.route("/", methods=["GET"])
     def ssh_public_keys():

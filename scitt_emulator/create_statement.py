@@ -1,5 +1,6 @@
 # Copyright (c) SCITT Authors
 # Licensed under the MIT License.
+import uuid
 import pathlib
 import argparse
 from typing import Optional
@@ -9,9 +10,6 @@ import pycose
 import pycose.headers
 import pycose.messages
 import pycose.keys.ec2
-
-# TODO jwcrypto is LGPLv3, is there another option with a permissive licence?
-import jwcrypto.jwk
 
 
 @pycose.headers.CoseHeaderAttribute.register_attribute()
@@ -78,18 +76,42 @@ def create_claim(
     # RSA: public_exponent(int), size(int)
     # EC: crv(str) (one of P-256, P-384, P-521, secp256k1)
     # OKP: crv(str) (one of Ed25519, Ed448, X25519, X448)
-    key = jwcrypto.jwk.JWK()
     if private_key_pem_path and private_key_pem_path.exists():
-        key.import_from_pem(private_key_pem_path.read_bytes())
+        """
+        import subprocess
+        subprocess.check_call(
+            [
+                "bash",
+                "-c",
+                f"ssh-keygen -q -f /dev/stdout -t ecdsa -b 384 -N '' <<<y 2>/dev/null | python -c 'import sys; from cryptography.hazmat.primitives import serialization; print(serialization.load_ssh_private_key(sys.stdin.buffer.read(), password=None).private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption()).decode().rstrip())' > {private_key_pem_path}",
+            ]
+        )
+        """
+        private_key_pem = private_key_pem_path.read_bytes()
+        import hashlib
+        kid_hash = hashlib.sha384()
+        kid_hash.update(private_key_pem)
+        kid = kid_hash.hexdigest()
+        cwt_cose_key = cwt.COSEKey.from_pem(private_key_pem, kid=kid)
     else:
-        key = key.generate(kty="EC", crv="P-384")
-    kid = key.thumbprint()
-    key_as_pem_bytes = key.export_to_pem(private_key=True, password=None)
-    # cwt_cose_key = cwt.COSEKey.generate_symmetric_key(alg=alg, kid=kid)
-    cwt_cose_key = cwt.COSEKey.from_pem(key_as_pem_bytes, kid=kid)
-    # cwt_cose_key_to_cose_key = cwt.algs.ec2.EC2Key.to_cose_key(cwt_cose_key)
-    cwt_cose_key_to_cose_key = cwt_cose_key.to_dict()
-    sign1_message_key = pycose.keys.ec2.EC2Key.from_dict(cwt_cose_key_to_cose_key)
+        cwt_cose_key = pycose.keys.EC2Key.generate_key(
+            pycose.keys.curves.P384,
+        )
+    # sign1_message_key = cwt.algs.ec2.EC2Key.to_cose_key(cwt_cose_key)
+    import base64
+    cwt_ec2_key_as_dict = {
+        "crv": "P-384",
+        "kid": str(uuid.uuid4()),
+        "kty": "EC",
+        # "use": "sig",
+        "use": "enc",
+        "x": base64.b64encode(cwt_cose_key.x).decode(),
+        "y": base64.b64encode(cwt_cose_key.y).decode(),
+        "d": base64.b64encode(cwt_cose_key.d).decode(),
+    }
+    # sign1_message_key = pycose.keys.ec2.EC2Key.from_dict(cwt_ec2_key_as_dict)
+    sign1_message_key = cwt.COSEKey.from_jwk(cwt_ec2_key_as_dict)
+
 
     # CWT_Claims (label: 14 pending [CWT_CLAIM_COSE]): A CWT representing
     # the Issuer (iss) making the statement, and the Subject (sub) to
@@ -110,6 +132,7 @@ def create_claim(
     }
     # }
     cwt_token = cwt.encode(cwt_claims, cwt_cose_key)
+    print(cwt.decode(cwt_token , cwt_cose_key))
 
     # Protected_Header = {
     protected = {
@@ -123,7 +146,7 @@ def create_claim(
         pycose.headers.Algorithm: getattr(cwt.enums.COSEAlgs, alg),
         # Key ID (label: 4): Key ID, as a bytestring
         #   4   => bstr            ; Key ID,
-        pycose.headers.KID: kid.encode("ascii"),
+        pycose.headers.KID: kid.encode('ascii'),
         #   14  => CWT_Claims      ; CBOR Web Token Claims,
         CWTClaims: cwt_token,
         #   393 => Reg_Info        ; Registration Policy info,
@@ -154,10 +177,6 @@ def create_claim(
     # https://github.com/TimothyClaeys/pycose/blob/e527e79b611f6cc6673bbb694056a7468c2eef75/pycose/messages/cosemessage.py#L143
     claim = msg.encode(tag=True)
     claim_path.write_bytes(claim)
-
-    # Write out private key in PEM format if argument given and not exists
-    if private_key_pem_path and not private_key_pem_path.exists():
-        private_key_pem_path.write_bytes(key_as_pem_bytes)
 
 
 def cli(fn):
