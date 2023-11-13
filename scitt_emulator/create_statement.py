@@ -76,7 +76,8 @@ def create_claim(
     # RSA: public_exponent(int), size(int)
     # EC: crv(str) (one of P-256, P-384, P-521, secp256k1)
     # OKP: crv(str) (one of Ed25519, Ed448, X25519, X448)
-    if private_key_pem_path and not private_key_pem_path.exists():
+    if private_key_pem_path and private_key_pem_path.exists():
+        """
         import subprocess
         subprocess.check_call(
             [
@@ -85,38 +86,32 @@ def create_claim(
                 f"ssh-keygen -q -f /dev/stdout -t ecdsa -b 384 -N '' <<<y 2>/dev/null | python -c 'import sys; from cryptography.hazmat.primitives import serialization; print(serialization.load_ssh_private_key(sys.stdin.buffer.read(), password=None).private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption()).decode().rstrip())' > {private_key_pem_path}",
             ]
         )
-    private_key_pem = private_key_pem_path.read_bytes()
-    import hashlib
-    kid_hash = hashlib.sha384()
-    kid_hash.update(private_key_pem)
-    kid = kid_hash.hexdigest()
-    cwt_cose_key = cwt.COSEKey.from_pem(private_key_pem, kid=kid)
-    # cwt_cose_key = cwt.COSEKey.generate_ec2_key(alg=alg, kid=kid)
-    import pprint
-    cwt_ec2_key_as_dict = cwt_cose_key.to_dict()
-    pprint.pprint(cwt_ec2_key_as_dict)
-    import pprint
-    import inspect
-    cose_tags = {
-        member.identifier: member.fullname
-        for _member_name, member in inspect.getmembers(pycose.headers)
-        if (
-            hasattr(member, "identifier")
-            and hasattr(member, "fullname")
+        """
+        private_key_pem = private_key_pem_path.read_bytes()
+        import hashlib
+        kid_hash = hashlib.sha384()
+        kid_hash.update(private_key_pem)
+        kid = kid_hash.hexdigest()
+        cwt_cose_key = cwt.COSEKey.from_pem(private_key_pem, kid=kid)
+    else:
+        cwt_cose_key = pycose.keys.EC2Key.generate_key(
+            pycose.keys.curves.P384,
         )
+    # sign1_message_key = cwt.algs.ec2.EC2Key.to_cose_key(cwt_cose_key)
+    import base64
+    cwt_ec2_key_as_dict = {
+        "crv": "P-384",
+        "kid": str(uuid.uuid4()),
+        "kty": "EC",
+        # "use": "sig",
+        "use": "enc",
+        "x": base64.b64encode(cwt_cose_key.x).decode(),
+        "y": base64.b64encode(cwt_cose_key.y).decode(),
+        "d": base64.b64encode(cwt_cose_key.d).decode(),
     }
-    pprint.pprint(cose_tags)
-    cwt_ec2_key_as_dict_labeled = {
-        cose_tags.get(key, key): value
-        for key, value in cwt_ec2_key_as_dict.items()
-    }
-    # print("cwt_ec2_key_as_dict_labeled['STATIC_KEY_ID']", cwt_ec2_key_as_dict_labeled['CRITICAL'])
-    pprint.pprint(cwt_ec2_key_as_dict)
-    pprint.pprint(cwt_ec2_key_as_dict_labeled)
-    pycose_cose_key = pycose.keys.ec2.EC2Key.from_dict(cwt_ec2_key_as_dict)
-    # pycose_cose_key.kid = cwt_ec2_key_as_dict_labeled['CRITICAL']
-    # cwt_cose_key._kid = pycose_cose_key.kid
-    sign1_message_key = pycose.keys.ec2.EC2Key.from_dict(cwt_ec2_key_as_dict)
+    # sign1_message_key = pycose.keys.ec2.EC2Key.from_dict(cwt_ec2_key_as_dict)
+    sign1_message_key = cwt.COSEKey.from_jwk(cwt_ec2_key_as_dict)
+
 
     # CWT_Claims (label: 14 pending [CWT_CLAIM_COSE]): A CWT representing
     # the Issuer (iss) making the statement, and the Subject (sub) to
