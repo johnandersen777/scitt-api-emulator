@@ -6,7 +6,7 @@ inputs:
     required: true
   subject:
     description: 'Subject of statement'
-    required: true
+    required: false
   payload:
     description: 'Payload for statement'
     required: true
@@ -16,7 +16,7 @@ inputs:
     default: 'application/json'
   private-key-pem:
     description: 'Private key pem bytes'
-    required: true
+    required: false
   scitt-url:
     description: 'URL of scitt instance'
     required: true
@@ -36,7 +36,7 @@ runs:
         PRIVATE_KEY_PEM: ${{ inputs.private-key-pem }}
         PAYLOAD_CONTENT_TYPE: ${{ inputs.payload-content-type }}
       run: |
-        scitt-emulator client create-claim --issuer "${ISSUER}" --subject "${SUBJECT}" --content-type "${PAYLOAD_CONTENT_TYPE}" --payload "${PAYLOAD}" --out statement.cbor --private-key-pem "${PRIVATE_KEY_PEM}"
+        scitt-emulator client create-claim --issuer "${ISSUER}" --content-type "${PAYLOAD_CONTENT_TYPE}" --payload "${PAYLOAD}" --out statement.cbor
     - name: Submit statement
       shell: bash -xeuo pipefail {0}
       id: submit-statement
