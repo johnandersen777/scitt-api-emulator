@@ -17,6 +17,9 @@ inputs:
   private-key-pem:
     description: 'Private key pem bytes'
     required: false
+  token:
+    description: 'Token to auth to SCITT instance'
+    required: false
   scitt-url:
     description: 'URL of scitt instance'
     required: true
@@ -33,6 +36,7 @@ runs:
         ISSUER: ${{ inputs.issuer }}
         PAYLOAD: ${{ inputs.payload }}
         SUBJECT: ${{ inputs.subject }}
+        TOKEN: ${{ inputs.token }}
         PRIVATE_KEY_PEM: ${{ inputs.private-key-pem }}
         PAYLOAD_CONTENT_TYPE: ${{ inputs.payload-content-type }}
       run: |
