@@ -19,7 +19,7 @@ from scitt_emulator.key_helper_dataclasses import VerificationKey
 CONTENT_TYPE = "application/key+did"
 
 
-def key_loader_format_did_key(
+def key_loader_format_did_jwk(
     unverified_issuer: str,
 ) -> List[VerificationKey]:
     if not unverified_issuer.startswith(DID_JWK_METHOD):
@@ -39,16 +39,3 @@ def key_loader_format_did_key(
             cose=None,
         )
     ]
-
-
-def transform_key_instance_cryptography_ecc_public_to_jwcrypto_jwk(
-    key: cryptography.hazmat.primitives.asymmetric.ec.EllipticCurvePublicKey,
-) -> jwcrypto.jwk.JWK:
-    if not isinstance(key, cryptography.hazmat.primitives.asymmetric.ec.EllipticCurvePublicKey):
-        raise TypeError(key)
-    return jwcrypto.jwk.JWK.from_pem(
-        key.public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-    )
