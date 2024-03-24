@@ -138,6 +138,7 @@ import uuid
 import copy
 import shlex
 import types
+import shutil
 import atexit
 import asyncio
 import pathlib
@@ -2666,3 +2667,149 @@ def cli():
 
 if __name__ == "__main__":
     cli()
+
+
+# Copyright (c) SCITT Authors.
+# Licensed under the MIT License.
+import jwt
+import json
+import jsonschema
+from werkzeug.wrappers import Request
+from scitt_emulator.client import HttpClient
+
+
+class RelyingPartyClientPhase0WithinSCITTServer:
+    def __init__(self, app, ):
+    def token_issue(
+        *,
+        audience=None,
+        subject=None,
+    ):
+        algorithm = "RS256"
+        return jwt.encode(
+            # TODO app.fqdn
+            {"iss": app.fqdn, "aud": audience, "sub": subject},
+            key.export_to_pem(private_key=True, password=None),
+            algorithm=algorithm,
+            headers={"kid": key.thumbprint()},
+        )
+
+
+
+class PolicyEngineHTTPGitHubWorkflow:
+    def __init__(self, app, config_path):
+        self.app = app
+        self.asgi_app = app.asgi_app
+        self.config = {}
+        if config_path and config_path.exists():
+            self.config = json.loads(config_path.read_text())
+
+        relying_party_client_entrypoint = self.config.get("relying_party_client")
+        relying_party_client_class = entrypoint_style_load(relying_party_client_entrypoint)
+        relying_party_client_config = self.config.get(
+            "relying_party_client_config", None,
+        )
+        self.relying_party_client = relying_party_client_class(**relying_party_client_config)
+
+        self.start_policy_engine_http_github_workflow(self.app, self.relying_party_client)
+
+    def __call__(self, environ, start_response):
+        return self.asgi_app(environ, start_response)
+
+    @staticmethod
+    def get_tcp_ports_bound_to(pid):
+        with open(f"/proc/{pid}/net/tcp", "r") as f:
+            for line in f:
+                m = re.match(r"\s+\d+: [0-9A-F]+:([0-9A-F]+)", line)
+                if m:
+                    port_hex = m.group(1)
+                    port = int(port_hex, 16)
+                    return port
+
+    @staticmethod
+    def start_policy_engine_http_github_workflow(app, relying_party_client):
+        """
+        Plugin to run the policy engine in another process. Gets token to auth to
+        SCITT via relying party
+        """
+        private_key, relying_party_service_account_token = (
+            relying_party_client.token_issue(
+                audience=audience,
+                subject=subject,
+            )
+        )
+        # TODO Phase 1, move this as OIDC endpoints to
+        # relying party for receipt to JWT issuance as basis
+        # for ClearForTakeOff / policy engine job JWK issuance
+        app.jwks[key.thumbprint()] = {
+            **key.export_public(as_dict=True),
+            "use": "sig",
+            "kid": kid,
+        }
+
+        with tempdir.TemporaryDirectory(delete=False) as tempdir:
+            atexit.register(shutil.rmtree(tempdir))
+            relying_party_client_config_path = pathlib.Path(
+                tempdir, "config.json",
+            )
+            if app.port == 0:
+                relying_party_client_config_path = pathlib.Path(
+                    str(relying_party_client_config_path) + ".reload.file",
+                )
+                relying_party_client_config_path.write_bytes(b"")
+            else:
+                relying_party_client_config_path.write_text(
+                    relying_party_client.config_string,
+                )
+
+        # Creating a child process using fork() method
+        policy_engine_pid = os.fork()
+
+        # If PID is zero we're in the child process
+        if policy_engine_pid == 0:
+            pid = os.getpid()
+            # Issue a workload identity token to the policy engine we start here and
+            # pass it via cli args.
+            # Need lifespan callback for grabbing inital token issued to policy engine
+            # as it's workload id, it uses that workload ID plus the address of the
+            # relying party (phase 0: parent process's listening port)
+            scitt_emulator.policy_engine.cli_api(
+                types.SimpleNamespace(
+                    # If path ends in .reload.file, treat as filepath and
+                    # re-read until it contains the bound URL
+                    relying_party_client=make_entrypoint_style_string(relying_party_client.__class__),
+                    relying_party_client_config_path=relying_party_client_config_path,
+                    relying_party_service_account_token=relying_party_client.service_account_token,
+                    extra_inits=scitt_emulator.policy_engine.DEFAULT_EXTRA_INITS,
+                    lifespan=scitt_emulator.policy_engine.DEFAULT_LIFESPAN_CALLBACKS,
+                    bind="127.0.0.1:0",
+                    workers=1,
+                )
+            )
+        elif policy_engine_pid > 0:
+            with snoop():
+                # Get the process ID
+                scitt_pid = os.getpid()
+                # Get the port from the process' listening sockets
+                port = None
+                time.sleep(2)
+
+                @snoop
+                def send_relying_party_config_string():
+                    time.sleep(2)
+                    scitt_port = PolicyEngineHTTPGitHubWorkflow.get_tcp_ports_bound_to(os.getpid())
+                    relying_party_client_config_path.write_text(
+                        relying_party_client.make_config_string(
+                            audience=f"http://localhost:{scitt_port}",
+                        ),
+                    )
+
+                if relying_party_client.
+                thread = threading.Thread(name="get_scitt_service_port",
+                                          target=send_relying_party_config_string)
+                thread.start()
+                atexit.register(thread.join)
+
+                return PolicyEngineHTTPGitHubWorkflow.get_tcp_ports_bound_to(pid)
+        else:
+            raise Exception("Fork failed")

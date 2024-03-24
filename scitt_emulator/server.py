@@ -34,9 +34,6 @@ def create_flask_app(config):
     app.config.update(dict(DEBUG=True))
     app.config.update(config)
 
-    if app.config.get("middleware", None):
-        app.wsgi_app = app.config["middleware"](app.wsgi_app, app.config.get("middleware_config_path", None))
-
     error_rate = app.config["error_rate"]
     use_lro = app.config["use_lro"]
 
@@ -53,6 +50,11 @@ def create_flask_app(config):
     app.scitt_service.initialize_service()
     print(f"Service parameters: {app.service_parameters_path}")
 
+    app.jwks = {}
+
+    if app.config.get("middleware", None):
+        app.wsgi_app = app.config["middleware"](app, app.config.get("middleware_config_path", None))
+
     def is_unavailable():
         return random.random() <= error_rate
 
@@ -66,12 +68,70 @@ def create_flask_app(config):
                  "registration_endpoint": f"/entries",
                  "nonce_endpoint": f"/nonce",
                  "registration_policy": f"/statements/TODO",
-                 "supported_signature_algorithms": ["ES256"],
+                 "supported_signature_algorithms": ["RS256"],
                  "jwks": {
-                      "keys": app.scitt_service.keys_as_jwks(),
+                      "keys": {
+                          **app.scitt_service.keys_as_jwks(),
+                          **app.jwks,
+                      }
                  }
             }
         )
+
+    # TODO During phase 1, this should be moved into it's own service
+    # @lice, track this as a series of issues from engineering logs 2024-03-23
+    @app.route("/v1/token/issue/<string:audience>/<string:subject>", methods=["POST"])
+    def token_issue(audience: str, subject: str):
+        if is_unavailable():
+            return make_unavailable_error()
+
+        e = Exception("Failed to verify statement")
+        try:
+            verification_key = verify_statement(request.get_data())
+        except Exception as error:
+            e = error
+        if verification_key is None:
+            return make_error("StatementVerificationFailed", str(e), 404)
+
+        key = jwcrypto.jwk.JWK.generate(kty="RSA", size=2048)
+        app.jwks[key.thumbprint()] = key
+
+        algorithm = "RS256"
+        iss = app.config.get("fqdn", f"http://localhost:{app.port}")
+        new_token = jwt.encode(
+            # TODO app.fqdn
+            {"iss": iss, "aud": audience, "sub": subject},
+            key.export_to_pem(private_key=True, password=None),
+            algorithm=algorithm,
+            headers={"kid": key.thumbprint()},
+        )
+
+        return jsonify(
+            {
+                "token": new_token,
+            }
+        )
+
+    # TODO During phase 1, this should be moved into it's own service
+    @app.route("/v1/token/revoke", methods=["POST"])
+    def token_revoke():
+        if is_unavailable():
+            return make_unavailable_error()
+
+        token = json.loads(request.get_data())["token"]
+
+        unverified_token = jwt.decode_token(
+            token,
+            options={"verify_signature": False},
+        )
+        unverified_token_header = unverified_token["header"]
+        kid = unverified_token_header.get("kid")
+
+        if kid in app.jwks:
+            del app.jwks[kid]
+            return jsonify({"status": "success", "detail": None})
+
+        return make_error("KeyIDNotActive", f"kid {kid!r} not active", 404)
 
     @app.route("/entries/<string:entry_id>/receipt", methods=["GET"])
     def get_receipt(entry_id: str):
@@ -156,7 +216,9 @@ def cli(fn):
                 "use_lro": args.use_lro
             }
         )
-        app.run(host="0.0.0.0", port=args.port)
+        app.host = "0.0.0.0"
+        app.port = args.port
+        app.run(host=args.host, port=args.port)
 
     parser.set_defaults(func=cmd)
 

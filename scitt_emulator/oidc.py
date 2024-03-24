@@ -10,6 +10,7 @@ from scitt_emulator.client import HttpClient
 class OIDCAuthMiddleware:
     def __init__(self, app, config_path):
         self.app = app
+        self.asgi_app = app.asgi_app
         self.config = {}
         if config_path and config_path.exists():
             self.config = json.loads(config_path.read_text())
@@ -29,7 +30,7 @@ class OIDCAuthMiddleware:
         claims = self.validate_token(request.headers["Authorization"].replace("Bearer ", ""))
         if "claim_schema" in self.config and claims["iss"] in self.config["claim_schema"]:
             jsonschema.validate(claims, schema=self.config["claim_schema"][claims["iss"]])
-        return self.app(environ, start_response)
+        return self.asgi_app(environ, start_response)
 
     def validate_token(self, token):
         validation_error = Exception(f"Failed to validate against all issuers: {self.jwks_clients.keys()!s}")
