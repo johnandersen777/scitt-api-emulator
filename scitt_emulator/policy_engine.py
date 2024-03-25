@@ -2714,7 +2714,7 @@ class PolicyEngineHTTPGitHubWorkflow:
         self.start_policy_engine_http_github_workflow(self.app, self.relying_party_client)
 
     def __call__(self, environ, start_response):
-        return self.asgi_app(environ, start_response)
+        return self.wsgi_app(environ, start_response)
 
     @staticmethod
     def get_tcp_ports_bound_to(pid):

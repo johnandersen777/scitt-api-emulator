@@ -30,7 +30,7 @@ class OIDCAuthMiddleware:
         claims = self.validate_token(request.headers["Authorization"].replace("Bearer ", ""))
         if "claim_schema" in self.config and claims["iss"] in self.config["claim_schema"]:
             jsonschema.validate(claims, schema=self.config["claim_schema"][claims["iss"]])
-        return self.asgi_app(environ, start_response)
+        return self.wsgi_app(environ, start_response)
 
     def validate_token(self, token):
         validation_error = Exception(f"Failed to validate against all issuers: {self.jwks_clients.keys()!s}")

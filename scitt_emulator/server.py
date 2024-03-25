@@ -52,8 +52,8 @@ def create_flask_app(config):
 
     app.jwks = {}
 
-    if app.config.get("middleware", None):
-        app.wsgi_app = app.config["middleware"](app, app.config.get("middleware_config_path", None))
+    for middleware, middleware_config_path in zip(app.config.get("middleware", []), app.config.get("middleware_config_path", [])):
+        app.wsgi_app = middleware(app, middleware_config_path)
 
     def is_unavailable():
         return random.random() <= error_rate
@@ -193,6 +193,7 @@ def create_flask_app(config):
 
 def cli(fn):
     parser = fn()
+    parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("-p", "--port", type=int, default=8000)
     parser.add_argument("--error-rate", type=float, default=0.01)
     parser.add_argument("--use-lro", action="store_true", help="Create operations for submissions")
@@ -201,9 +202,10 @@ def cli(fn):
     parser.add_argument(
         "--middleware",
         type=lambda value: list(entrypoint_style_load(value))[0],
-        default=None,
+        nargs="*",
+        default=[],
     )
-    parser.add_argument("--middleware-config-path", type=Path, default=None)
+    parser.add_argument("--middleware-config-path", type=Path, nargs="*", default=[])
 
     def cmd(args):
         app = create_flask_app(
@@ -216,7 +218,7 @@ def cli(fn):
                 "use_lro": args.use_lro
             }
         )
-        app.host = "0.0.0.0"
+        app.host = args.host
         app.port = args.port
         app.run(host=args.host, port=args.port)
 
