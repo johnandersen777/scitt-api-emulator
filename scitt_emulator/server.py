@@ -2,13 +2,19 @@
 # Licensed under the MIT License.
 
 import os
+import json
 from pathlib import Path
 from io import BytesIO
 import random
 
+import jwt.api_jwt
+import jwcrypto.jwt
+import pycose.headers
+from pycose.messages import Sign1Message
 from flask import Flask, request, send_file, make_response, jsonify
 
 from scitt_emulator.tree_algs import TREE_ALGS
+from scitt_emulator.verify_statement import verify_statement
 from scitt_emulator.plugin_helpers import entrypoint_style_load
 from scitt_emulator.scitt import EntryNotFoundError, ClaimInvalidError, OperationNotFoundError
 
@@ -85,9 +91,17 @@ def create_flask_app(config):
         if is_unavailable():
             return make_unavailable_error()
 
+        claim = request.get_data()
+
+        msg = Sign1Message.decode(claim, tag=True)
+
+        if pycose.headers.ContentType not in msg.phdr:
+            raise ClaimInvalidError("Claim does not have a content type header parameter")
+
+        verification_key = None
         e = Exception("Failed to verify statement")
         try:
-            verification_key = verify_statement(request.get_data())
+            verification_key = verify_statement(msg)
         except Exception as error:
             e = error
         if verification_key is None:
@@ -120,7 +134,7 @@ def create_flask_app(config):
 
         token = json.loads(request.get_data())["token"]
 
-        unverified_token = jwt.decode_token(
+        unverified_token = jwt.api_jwt.decode_complete(
             token,
             options={"verify_signature": False},
         )
