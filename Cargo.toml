@@ -17,6 +17,8 @@ git2 = "0.13"
 neo4rs = "0.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+pyo3-log = "0.11.0"
+log = "0.4.22"
 
 [tool.maturin]
 # TODO Report errors in JSON format when AI is building

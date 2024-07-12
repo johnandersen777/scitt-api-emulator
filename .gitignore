@@ -71,3 +71,7 @@ docs/_build/
 # Pyenv
 .python-version
 .venv/
+
+request.json
+request.yml
+request.yaml

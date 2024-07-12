@@ -1,3 +1,4 @@
+use log::info;
 use uuid::Uuid;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
@@ -6,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 use std::fmt;
 use std::collections::HashMap;
-use std::error::Error;
 
 
 // Wrapper type for serde_json::Error
@@ -255,9 +255,9 @@ impl PolicyEngineWorkflow {
     }
 }
 
-// fn main() -> Result<(), Box<dyn Error>> {
-/// Formats the sum of two numbers as string.
-fn rust_parse_policy_engine_request(_py: Python<'_>, json_data: &str) -> Result<(), Box<dyn Error>> {
+
+#[pyfunction]
+fn parse_policy_engine_request(_py: Python<'_>, json_data: &str) -> PyResult<()> {
     Python::with_gil(|py| -> PyResult<()> {
         let fun: Py<PyAny> = PyModule::from_code_bound(
             py,
@@ -302,21 +302,13 @@ fn rust_parse_policy_engine_request(_py: Python<'_>, json_data: &str) -> Result<
         println!("Workflow validated successfully.");
 
         Ok(())
-    });
-
-    Ok(())
-}
-
-
-#[pyfunction]
-fn parse_policy_engine_request(py: Python<'_>, json_data: &str) -> PyResult<()> {
-    rust_parse_policy_engine_request(py, json_data);
-
-    Ok(())
+    })
 }
 
 #[pymodule]
 fn scitt_api_emulator_rust_policy_engine(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    pyo3_log::init();
+
     m.add_function(wrap_pyfunction!(parse_policy_engine_request, m)?)?;
 
     Ok(())
