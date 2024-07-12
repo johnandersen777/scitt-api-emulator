@@ -75,3 +75,5 @@ docs/_build/
 request.json
 request.yml
 request.yaml
+
+*.swp

@@ -178,8 +178,6 @@ enum ValidationError {
     CustomError(StringError),
 }
 
-// pyo3::exceptions::impl_native_exception!(ValidationError, pyo3::exceptions::PyExc_Exception, pyo3:exceptions::native_doc!("ValidationError"));
-
 // Convert serde_json::Error to PyErr
 impl From<ValidationError> for PyErr {
     fn from(err: ValidationError) -> PyErr {
@@ -263,10 +261,8 @@ fn parse_policy_engine_request(_py: Python<'_>, json_data: &str) -> PyResult<()>
             py,
             "def example(*args, **kwargs):
                 if args:
-                    raise Execption(args[0])
                     print(args[0])
-                print(args, kwargs)
-                print('Workflow validated successfully.')",
+                print(args, kwargs)",
             "",
             "",
         )?
@@ -278,7 +274,7 @@ fn parse_policy_engine_request(_py: Python<'_>, json_data: &str) -> PyResult<()>
         fun.call1(py, args)?;
 
         let decoded: PolicyEngineRequest = serde_json::from_str(json_data).map_err(SerdeErrorWrapper)?;
-        println!("Decoded JSON: {:#?}", decoded);
+        info!("Decoded JSON: {:#?}", decoded);
 
         // call object without any arguments
         fun.call0(py)?;
@@ -287,7 +283,7 @@ fn parse_policy_engine_request(_py: Python<'_>, json_data: &str) -> PyResult<()>
         let detail = HashMap::new();
 
         let policy_status = PolicyEngineStatus::new(Uuid::new_v4().to_string(), status, detail)?;
-        println!(
+        info!(
             "Created PolicyEngineStatus successfully with status: {:?}",
             policy_status.status
         );
@@ -299,7 +295,7 @@ fn parse_policy_engine_request(_py: Python<'_>, json_data: &str) -> PyResult<()>
         };
 
         workflow.validate()?;
-        println!("Workflow validated successfully.");
+        info!("Workflow validated successfully.");
 
         Ok(())
     })
