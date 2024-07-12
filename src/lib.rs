@@ -1,9 +1,29 @@
 use pyo3::prelude::*;
+use pyo3::types::PyTuple;
+use pyo3::exceptions::PyValueError;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::fmt;
 use std::collections::HashMap;
 use std::error::Error;
+
+
+// Wrapper type for serde_json::Error
+struct SerdeErrorWrapper(serde_json::Error);
+
+// Implement From<serde_json::Error> for the wrapper type
+impl From<serde_json::Error> for SerdeErrorWrapper {
+    fn from(err: serde_json::Error) -> SerdeErrorWrapper {
+        SerdeErrorWrapper(err)
+    }
+}
+
+// Implement From<SerdeErrorWrapper> for PyErr
+impl From<SerdeErrorWrapper> for PyErr {
+    fn from(wrapper: SerdeErrorWrapper) -> PyErr {
+        PyValueError::new_err(wrapper.0.to_string())
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Context {
@@ -159,6 +179,14 @@ enum ValidationError {
 
 // pyo3::exceptions::impl_native_exception!(ValidationError, pyo3::exceptions::PyExc_Exception, pyo3:exceptions::native_doc!("ValidationError"));
 
+// Convert serde_json::Error to PyErr
+impl From<ValidationError> for PyErr {
+    fn from(err: ValidationError) -> PyErr {
+        PyValueError::new_err(err.to_string())
+    }
+}
+
+
 impl fmt::Display for ValidationError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
@@ -225,78 +253,66 @@ impl PolicyEngineWorkflow {
 
 // fn main() -> Result<(), Box<dyn Error>> {
 /// Formats the sum of two numbers as string.
-fn parse_policy_engine_request() -> Result<(), Box<dyn Error>> {
-    let json_data = r#"
-        {
-            "context": {
-                "config": {
-                    "env": {
-                        "GITHUB_ACTOR": "aliceoa",
-                        "GITHUB_ACTOR_ID": "1234567",
-                        "GITHUB_API": "https://api.github.com/",
-                        "GITHUB_REPOSITORY": "scitt-community/scitt-api-emulator"
-                    }
-                },
-                "secrets": {
-                    "MY_SECRET": "test-secret"
-                }
-            },
-            "workflow": {
-                "on": {
-                    "push": {
-                        "branches": [
-                            "main"
-                        ]
-                    }
-                },
-                "jobs": {
-                    "lint": {
-                        "runs-on": "ubuntu-latest",
-                        "steps": [
-                            {
-                                "uses": "actions/checkout@v4"
-                            }
-                        ]
-                    }
-                }
-            }
-        }
-        "#;
+fn rust_parse_policy_engine_request(py: Python<'_>, json_data: &str) -> Result<(), Box<dyn Error>> {
+    Python::with_gil(|py| -> PyResult<()> {
+        let fun: Py<PyAny> = PyModule::from_code_bound(
+            py,
+            "def example(*args, **kwargs):
+                if args:
+                    print(args[0])
+                print(args, kwargs)
+                print('Workflow validated successfully.')",
+            "",
+            "",
+        )?
+        .getattr("example")?
+        .into();
 
-    let decoded: PolicyEngineRequest = serde_json::from_str(json_data)?;
-    println!("Decoded JSON: {:#?}", decoded);
+        // call object with Python tuple of positional arguments
+        let args = PyTuple::new_bound(py, &[json_data]);
+        fun.call1(py, args)?;
 
-    let status = PolicyEngineStatuses::Submitted;
-    let detail = HashMap::new();
+        let decoded: PolicyEngineRequest = serde_json::from_str(json_data).map_err(SerdeErrorWrapper)?;
+        println!("Decoded JSON: {:#?}", decoded);
 
-    let policy_status = PolicyEngineStatus::new(status, detail)?;
-    println!(
-        "Created PolicyEngineStatus successfully with status: {:?}",
-        policy_status.status
-    );
+        // call object without any arguments
+        fun.call0(py)?;
 
-    let workflow = PolicyEngineWorkflow {
-        name: Some("example_workflow".to_string()),
-        on: serde_json::Value::String("push".to_string()),
-        jobs: HashMap::new(),
-    };
+        let status = PolicyEngineStatuses::Submitted;
+        let detail = HashMap::new();
 
-    workflow.validate()?;
-    println!("Workflow validated successfully.");
+        let policy_status = PolicyEngineStatus::new(status, detail)?;
+        println!(
+            "Created PolicyEngineStatus successfully with status: {:?}",
+            policy_status.status
+        );
+
+        let workflow = PolicyEngineWorkflow {
+            name: Some("example_workflow".to_string()),
+            on: serde_json::Value::String("push".to_string()),
+            jobs: HashMap::new(),
+        };
+
+        workflow.validate()?;
+        println!("Workflow validated successfully.");
+
+        Ok(())
+    });
 
     Ok(())
 }
 
 
 #[pyfunction]
-fn py_parse_policy_engine_request() -> PyResult<()> {
-    parse_policy_engine_request();
+fn parse_policy_engine_request(py: Python<'_>, json_data: &str) -> PyResult<()> {
+    rust_parse_policy_engine_request(py, json_data);
 
     Ok(())
 }
 
 #[pymodule]
-fn scitt_api_emulator_rust_policy_engine(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(py_parse_policy_engine_request, m)?)?;
+fn scitt_api_emulator_rust_policy_engine(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(parse_policy_engine_request, m)?)?;
+
     Ok(())
 }
