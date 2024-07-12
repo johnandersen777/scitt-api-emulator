@@ -126,8 +126,8 @@ struct PolicyEngineWorkflowJobStep {
     uses: Option<String>,
     shell: Option<String>,
     #[serde(rename = "with")]
-    with_inputs: HashMap<String, String>,
-    env: HashMap<String, String>,
+    with_inputs: Option<HashMap<String, String>>,
+    env: Option<HashMap<String, String>>,
     run: Option<String>,
 }
 
@@ -147,10 +147,10 @@ struct PolicyEngineWorkflow {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct PolicyEngineRequest {
-    inputs: HashMap<String, serde_json::Value>,
+    inputs: Option<HashMap<String, serde_json::Value>>,
     workflow: PolicyEngineWorkflow,
     context: HashMap<String, serde_json::Value>,
-    stack: HashMap<String, serde_json::Value>,
+    stack: Option<HashMap<String, serde_json::Value>>,
 }
 
 
