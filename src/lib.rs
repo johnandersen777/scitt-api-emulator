@@ -1,3 +1,4 @@
+use uuid::Uuid;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 use pyo3::exceptions::PyValueError;
@@ -230,17 +231,20 @@ fn validate_workflow(_workflow: &PolicyEngineWorkflow) -> Result<(), ValidationE
 
 #[derive(Serialize, Deserialize, Debug)]
 struct PolicyEngineStatus {
+    id: String,
     status: PolicyEngineStatuses,
     detail: HashMap<String, serde_json::Value>,
 }
 
 impl PolicyEngineStatus {
     pub fn new(
+        id: String,
         status: PolicyEngineStatuses,
         detail: HashMap<String, serde_json::Value>,
     ) -> Result<Self, ValidationError> {
         validate_status(&status)?;
-        Ok(PolicyEngineStatus { status, detail })
+        validate_id(&id)?;
+        Ok(PolicyEngineStatus { id, status, detail })
     }
 }
 
@@ -253,12 +257,13 @@ impl PolicyEngineWorkflow {
 
 // fn main() -> Result<(), Box<dyn Error>> {
 /// Formats the sum of two numbers as string.
-fn rust_parse_policy_engine_request(py: Python<'_>, json_data: &str) -> Result<(), Box<dyn Error>> {
+fn rust_parse_policy_engine_request(_py: Python<'_>, json_data: &str) -> Result<(), Box<dyn Error>> {
     Python::with_gil(|py| -> PyResult<()> {
         let fun: Py<PyAny> = PyModule::from_code_bound(
             py,
             "def example(*args, **kwargs):
                 if args:
+                    raise Execption(args[0])
                     print(args[0])
                 print(args, kwargs)
                 print('Workflow validated successfully.')",
@@ -281,7 +286,7 @@ fn rust_parse_policy_engine_request(py: Python<'_>, json_data: &str) -> Result<(
         let status = PolicyEngineStatuses::Submitted;
         let detail = HashMap::new();
 
-        let policy_status = PolicyEngineStatus::new(status, detail)?;
+        let policy_status = PolicyEngineStatus::new(Uuid::new_v4().to_string(), status, detail)?;
         println!(
             "Created PolicyEngineStatus successfully with status: {:?}",
             policy_status.status
