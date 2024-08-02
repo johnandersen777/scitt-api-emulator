@@ -74,6 +74,20 @@ private_key: |
   AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
   AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
   -----END RSA PRIVATE KEY-----
+webhooks:
+  set_annotation_error_in_path_test_py:
+    name: 'Webhook Workflow Name'
+    on:
+      push:
+        branches:
+        - main
+
+    jobs:
+      lint:
+        runs-on: ubuntu-latest
+        steps:
+        - run: |
+            echo ::error path=test.py::Hi
 ```
 
 Usage with Celery:
@@ -143,23 +157,10 @@ repository:
   full_name: "scitt-community/scitt-api-emulator"
 sender:
   login: pdxjohnny
-  webhook_workflow: |
-    name: 'Webhook Workflow Name'
-    on:
-      push:
-        branches:
-        - main
-
-    jobs:
-      lint:
-        runs-on: ubuntu-latest
-        steps:
-        - run: |
-            echo ::error path=test.py::Hi
 ```
 
 ```bash
-TASK_ID=$(curl -X POST http://localhost:8080/webhook/github -H "X-GitHub-Event: push" -H "X-GitHub-Delivery: 42" -H "Content-Type: application/json" -d @<(cat request-webhook.yml | python -c 'import json, yaml, sys; print(json.dumps(yaml.safe_load(sys.stdin.read()), indent=4, sort_keys=True))') | jq -r .detail.id)
+TASK_ID=$(curl -X POST http://localhost:8080/webhook/github/set_annotation_error_in_path_test_py -H "X-GitHub-Event: push" -H "X-GitHub-Delivery: 42" -H "Content-Type: application/json" -d @<(cat request-webhook.yml | python -c 'import json, yaml, sys; print(json.dumps(yaml.safe_load(sys.stdin.read()), indent=4, sort_keys=True))') | jq -r .detail.id)
 curl http://localhost:8080/request/status/$TASK_ID | jq
 ```
 
@@ -1477,10 +1478,49 @@ async def lifespan_gidgethub(
         }
 
 
+async def github_webhook_endpoint(request: Request):
+    fastapi_current_app.set(request.app)
+    fastapi_current_request.set(request)
+    # TODO(security) Set webhook secret as kwarg in from_http() call
+    event = sansio.Event.from_http(request.headers, await request.body())
+    # TODO Configurable events routed to workflows, issue ops
+    if event.event not in ("push", "pull_request"):
+        return
+    # Copy context for this request
+    context = PolicyEngineContext.model_validate_json(
+        request.state.context.model_dump_json()
+    )
+    context.app = request.app
+    context.state = request.state
+    # Router does not return results of dispatched functions
+    task_id = await check_suite_requested_triggers_run_workflows(
+        event,
+        context.state.gidgethub,
+        context,
+    )
+    return PolicyEngineStatus(
+        status=PolicyEngineStatuses.SUBMITTED,
+        detail=PolicyEngineSubmitted(id=task_id),
+    )
+
+
+class DuplicateURLQuotePlusEncodedWebhookCollision(Exception):
+    pass
+
+
+class LifespanGitHubAppWorkflowConfig(BaseModel):
+    slug: str
+    url_unsafe_slug: str
+    workflow: PolicyEngineWorkflow
+
+
 class LifespanGitHubAppConfig(BaseModel):
     app_id: int
     private_key: str
     danger_wide_permissions_token: str
+    # webhooks: Dict[str, PolicyEngineWorkflow] = Field(
+    #     default_factory=lambda: {},
+    # )
 
 
 @contextlib.asynccontextmanager
@@ -1500,6 +1540,29 @@ async def lifespan_github_app(
         app_id=config["app_id"],
         private_key=config["private_key"],
     )
+
+    webhooks = {}
+
+    for webhook_slug_potentailly_invalid, workflow in config["webhooks"].items():
+        webhook_slug = urllib.parse.quote_plus(webhook_slug_potentailly_invalid)
+        if (
+            webhook_slug != webhook_slug_potentailly_invalid
+            and webhook_slug in config["webhooks"]
+        ):
+            raise DuplicateURLQuotePlusEncodedWebhookCollision(f"{webhook_slug_potentailly_invalid} collided with another slug when encoded to {webhooks[webhook_slug]}")
+
+        workflow = PolicyEngineWorkflow.model_validate(workflow)
+
+        webhooks[webhook_slug] = LifespanGitHubAppWorkflowConfig(
+            slug=webhook_slug,
+            url_unsafe_slug=webhook_slug_potentailly_invalid,
+            workflow=workflow,
+        )
+
+    config["webhooks"] = webhooks
+
+    for webhook in config["webhooks"].values():
+        app.post("/webhook/github/{webhook.slug}")(github_webhook_endpoint)
 
     yield {"github_app": LifespanGitHubAppConfig.model_validate(config)}
 
@@ -1929,33 +1992,6 @@ def make_fastapi_app(
         )
         return request_status
 
-
-    @app.post("/webhook/github")
-    async def github_webhook_endpoint(request: Request):
-        fastapi_current_app.set(request.app)
-        fastapi_current_request.set(request)
-        # TODO(security) Set webhook secret as kwarg in from_http() call
-        event = sansio.Event.from_http(request.headers, await request.body())
-        # TODO Configurable events routed to workflows, issue ops
-        if event.event not in ("push", "pull_request"):
-            return
-        # Copy context for this request
-        context = PolicyEngineContext.model_validate_json(
-            request.state.context.model_dump_json()
-        )
-        context.app = request.app
-        context.state = request.state
-        # Router does not return results of dispatched functions
-        task_id = await check_suite_requested_triggers_run_workflows(
-            event,
-            context.state.gidgethub,
-            context,
-        )
-        return PolicyEngineStatus(
-            status=PolicyEngineStatuses.SUBMITTED,
-            detail=PolicyEngineSubmitted(id=task_id),
-        )
-
     return app
 
 
@@ -2340,12 +2376,12 @@ async def async_workflow_run_github_app_gidgethub(
                             ]
                         )
                     ),
-                    "images": [
-                        {
-                            "alt": "Super bananas",
-                            "image_url": "http://example.com/images/42",
-                        }
-                    ],
+                    # "images": [
+                    #     {
+                    #         "alt": "Super bananas",
+                    #         "image_url": "http://example.com/images/42",
+                    #     }
+                    # ],
                 },
             }
             await context.state.gidgethub.patch(
