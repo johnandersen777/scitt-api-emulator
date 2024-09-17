@@ -12,7 +12,7 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            'start-server=acdc_fastapi.cli:main',
+            'acdc-fastapi=acdc_fastapi.cli:main',
         ]
     },
 )
