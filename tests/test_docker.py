@@ -2,7 +2,7 @@ import docker
 import pathlib
 import time
 
-def poll_file_for_container(file, timeout=5):
+def poll_file_for_log(file, timeout=5):
     start_time = time.time()
     while time.time() - start_time < timeout:
         if pathlib.Path(file).exists():
@@ -18,15 +18,15 @@ def test_docker_containers():
 
     # Start Alice container
     alice = client.containers.run(
-        "acdc_fastapi", detach=True, ports={'8000/tcp': 8000}, name="alice", command="start-server --port 8000"
+        "acdc_fastapi", detach=True, ports={'8000/tcp': 8000}, name="alice", command="start-server --server alice --port 8000"
     )
-    assert poll_file_for_container(alice_log)
+    assert poll_file_for_log(alice_log)
 
     # Start Bob container
     bob = client.containers.run(
-        "acdc_fastapi", detach=True, ports={'8001/tcp': 8001}, name="bob", command="start-server --port 8001"
+        "acdc_fastapi", detach=True, ports={'8001/tcp': 8001}, name="bob", command="start-server --server bob --port 8001"
     )
-    assert poll_file_for_container(bob_log)
+    assert poll_file_for_log(bob_log)
 
     # Cleanup
     alice.stop()

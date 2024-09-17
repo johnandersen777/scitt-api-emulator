@@ -1,6 +1,6 @@
 # ACDC FastAPI
 
-This project sets up two FastAPI servers, Alice and Bob, running on separate ports using Docker containers.
+This project sets up two FastAPI servers, Alice and Bob, running on separate ports using Docker containers. It verifies ACDC messages between Alice and Bob.
 
 ## Setup Instructions
 
@@ -9,10 +9,11 @@ This project sets up two FastAPI servers, Alice and Bob, running on separate por
    ./setup.sh
    ```
 
-2. **Run the servers**:
-   You can run a FastAPI server using the CLI:
+2. **Run Alice or Bob servers**:
+   You can run Alice or Bob's FastAPI server using the CLI:
    ```bash
-   start-server --port 8000
+   start-server --server alice --port 8000
+   start-server --server bob --port 8001
    ```
 
 3. **Run tests**:

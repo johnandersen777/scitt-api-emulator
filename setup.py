@@ -6,7 +6,9 @@ setup(
     packages=find_packages(),
     install_requires=[
         "fastapi",
-        "uvicorn"
+        "uvicorn",
+        "keri",
+        "snoop"
     ],
     entry_points={
         'console_scripts': [
