@@ -3514,10 +3514,34 @@ async def agent_openai(
                         ),
                     )
                 elif result.action_type == AGIActionType.RUN_THREAD:
-                    run = await client.beta.threads.runs.create(
-                        assistant_id=result.action_data.agent_id,
-                        thread_id=result.action_data.thread_id,
-                    )
+                    try:
+                        run = await client.beta.threads.runs.create(
+                            assistant_id=result.action_data.agent_id,
+                            thread_id=result.action_data.thread_id,
+                        )
+                    except openai.BadRequestError as error:
+                        # TODO Generic error handler pattern with plugin helpers
+                        if "already has an active run" in error["message"]:
+                            # Re-queue once run complete
+                            waiting.append(
+                                (
+                                    AGIEventType.THREAD_RUN_COMPLETE,
+                                    async_lambda(lambda: result),
+                                )
+                            )
+                            # Check status of run
+                            work[
+                                tg.create_task(
+                                    client.beta.threads.runs.retrieve(
+                                        thread_id=result.thread_id, run_id=result.id
+                                    ),
+                                )
+                            ] = (
+                                f"thread.runs.{run.id}",
+                                (result, None),
+                            )
+                            continue
+                        raise
                     yield AGIEvent(
                         event_type=AGIEventType.NEW_THREAD_RUN_CREATED,
                         event_data=AGIEventNewThreadRunCreated(
