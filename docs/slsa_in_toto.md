@@ -67,7 +67,7 @@ From in-toto example:
         }],
         "url": "https://github.com/in-toto/in-toto/actions/runs/4425592351",
         "passedTests": [
-            "scorecard"
+            "scorecard greater than 5.0"
         ],
         "warnedTests": [],
         "failedTests": []
