@@ -1,4 +1,4 @@
-scitt-emulator[oidc,federation-activitypub-bovine] @ https://github.com/scitt-community/scitt-api-emulator/archive/3943d2882b006c958062baaed7df28d32ce26428.tar.gz
+scitt-emulator[oidc,federation-activitypub-bovine] @ https://github.com/scitt-community/scitt-api-emulator/archive/9921e4673cdb4be15e2b0ea1d49d9b2c7feba457.tar.gz
 myst-parser>=1.0.0
 sphinx
 sphinx-rtd-theme
