@@ -2971,8 +2971,8 @@ logger = logging.getLogger(__name__)
 
 
 class RetreiveInformation(BaseModel, extra="forbid"):
-    target: str
-    source: str
+    information_to_retreive: str
+    place_to_retrieve_from_or_search_all: str
 
 
 class AGIOpenAIAssistantResponseStep(BaseModel, extra="forbid"):
@@ -3020,6 +3020,9 @@ class AGIEventType(enum.Enum):
 class AGIEvent:
     event_type: AGIEventType
     event_data: Any
+
+
+AGIEventStream = NewType("AGIEventStream", AsyncIterator[AGIEvent])
 
 
 @dataclasses.dataclass
@@ -3376,12 +3379,20 @@ async def concurrently(
                 task.exception()
 
 
+GPT_MODEL_VERSION = "gpt-4o-2024-08-06"
+
+
+def make_async_lambda(result):
+    return async_lambda(lambda: result)
+
+
 async def agent_openai(
     tg: asyncio.TaskGroup,
     agi_name: str,
     kvstore: KVStore,
     action_stream: AGIActionStream,
     action_stream_insert: Callable[[Any], Awaitable[Any]],
+    waiting_event_stream_insert: Callable[[Any], Awaitable[Any]],
     openai_api_key: str,
     *,
     openai_base_url: Optional[str] = None,
@@ -3390,9 +3401,6 @@ async def agent_openai(
         api_key=openai_api_key,
         base_url=openai_base_url,
     )
-
-    waiting = []
-    previous_event_types = set()
 
     agents = {}
     threads = {}
@@ -3439,7 +3447,7 @@ async def agent_openai(
                             instructions=r"Use file search tools to retrieve information and generate useful responses from it as requested.",
                             model=await kvstore.get(
                                 f"openai.assistants.{agi_name}.model",
-                                "gpt-4o-2024-08-06",
+                                GPT_MODEL_VERSION,
                             ),
                             tools=[{"type": "file_search"}],
                         )
@@ -3460,7 +3468,7 @@ async def agent_openai(
                             instructions=result.action_data.agent_instructions,
                             model=await kvstore.get(
                                 f"openai.assistants.{agi_name}.model",
-                                "gpt-4o-2024-08-06",
+                                GPT_MODEL_VERSION,
                             ),
                             metadata={
                                 "retrieval_assistant_id": retrieval_assistant.id,
@@ -3556,10 +3564,10 @@ async def agent_openai(
                         # TODO Generic error handler pattern with plugin helpers
                         if "already has an active run" in str(error):
                             # Re-queue once run complete
-                            waiting.append(
+                            await waiting_event_stream_insert(
                                 (
                                     AGIEventType.THREAD_RUN_COMPLETE,
-                                    async_lambda(lambda: result),
+                                    make_async_lambda(result),
                                 )
                             )
                             # Check status of run
@@ -3616,10 +3624,10 @@ async def agent_openai(
                         # TODO Generic error handler pattern with plugin helpers
                         if "while a run" in str(error) and "is active" in str(error):
                             # Re-queue once run complete
-                            waiting.append(
+                            await waiting_event_stream_insert(
                                 (
                                     AGIEventType.THREAD_RUN_COMPLETE,
-                                    async_lambda(lambda: result),
+                                    make_async_lambda(result),
                                 )
                             )
                             # Check status of run
@@ -3631,7 +3639,6 @@ async def agent_openai(
                                     limit=1,
                                 )
                             ]
-                            snoop.pp(runs)
                             run = runs[0]
                             work[
                                 tg.create_task(
@@ -3726,73 +3733,75 @@ async def agent_openai(
                             tool_arguments = RetreiveInformation.model_validate_json(tool_call.function.arguments)
                             snoop.pp(tool_arguments)
 
-                            async def do_file_search():
-                                with snoop():
-                                    assistant = (
-                                        await openai.resources.beta.assistants.AsyncAssistants(
-                                            client
-                                        ).retrieve(
-                                            assistant_id=result.action_data.agent_id,
-                                        )
-                                    )
-                                    # TODO KVM nested style instead of this manual
-                                    # single level rigid nesting
-                                    retrieval_assistant = (
-                                        await openai.resources.beta.assistants.AsyncAssistants(
-                                            client
-                                        ).retrieve(
-                                            assistant_id=assistant.metadata["retrieval_assistant_id"],
-                                        )
-                                    )
-
-                                    thread = await client.beta.threads.create(
-                                      messages=[
-                                        {
-                                          "role": "user",
-                                          "content": f"run file search to respond to: {tool_call.function.arguments}",
-                                        }
-                                      ]
-                                    )
-
-                                    # The thread now has a vector store with that file in its tool resources.
-                                    snoop.pp(thread.tool_resources.file_search)
-
-                                    run = await client.beta.threads.runs.create_and_poll(
-                                        thread_id=thread.id,
-                                        assistant_id=retrieval_assistant.id
-                                    )
-
-                                    messages = list(
-                                        [
-                                            message
-                                            async for message in client.beta.threads.messages.list(
-                                                thread_id=thread.id,
-                                                run_id=run.id,
+                            def make_do_file_search(result):
+                                async def do_file_search():
+                                    with snoop():
+                                        assistant = (
+                                            await openai.resources.beta.assistants.AsyncAssistants(
+                                                client
+                                            ).retrieve(
+                                                assistant_id=result.assistant_id,
                                             )
-                                        ]
-                                    )
+                                        )
+                                        # TODO KVM nested style instead of this manual
+                                        # single level rigid nesting
+                                        retrieval_assistant = (
+                                            await openai.resources.beta.assistants.AsyncAssistants(
+                                                client
+                                            ).retrieve(
+                                                assistant_id=assistant.metadata["retrieval_assistant_id"],
+                                            )
+                                        )
 
-                                    message_content = messages[0].content[0].text
-                                    annotations = message_content.annotations
-                                    citations = []
-                                    for index, annotation in enumerate(annotations):
-                                        message_content.value = message_content.value.replace(annotation.text, f"[{index}]")
-                                        if file_citation := getattr(annotation, "file_citation", None):
-                                            cited_file = await client.files.retrieve(file_citation.file_id)
-                                            citations.append(f"[{index}] {cited_file.filename}")
+                                        thread = await client.beta.threads.create(
+                                          messages=[
+                                            {
+                                              "role": "user",
+                                              "content": f"run file search to respond to: {tool_call.function.arguments}",
+                                            }
+                                          ]
+                                        )
 
-                                    snoop.pp(message_content.value)
-                                    snoop.pp("\n".join(citations))
+                                        # The thread now has a vector store with that file in its tool resources.
+                                        snoop.pp(thread.tool_resources.file_search)
+
+                                        run = await client.beta.threads.runs.create_and_poll(
+                                            thread_id=thread.id,
+                                            assistant_id=retrieval_assistant.id
+                                        )
+
+                                        messages = list(
+                                            [
+                                                message
+                                                async for message in client.beta.threads.messages.list(
+                                                    thread_id=thread.id,
+                                                    run_id=run.id,
+                                                )
+                                            ]
+                                        )
+
+                                        message_content = messages[0].content[0].text
+                                        annotations = message_content.annotations
+                                        citations = []
+                                        for index, annotation in enumerate(annotations):
+                                            message_content.value = message_content.value.replace(annotation.text, f"[{index}]")
+                                            if file_citation := getattr(annotation, "file_citation", None):
+                                                cited_file = await client.files.retrieve(file_citation.file_id)
+                                                citations.append(f"[{index}] {cited_file.filename}")
+
+                                        snoop.pp(message_content.value)
+                                        snoop.pp("\n".join(citations))
+                                return do_file_search
 
                             # await call_tool_retreive_information(**tool_arguments)
-                            waiting.append(
+                            await waiting_event_stream_insert(
                                 (
                                     # OR is array, AND is dict values
                                     [
                                         AGIEventType.NEW_AGENT_CREATED,
                                         AGIEventType.EXISTING_AGENT_RETRIEVED,
                                     ],
-                                    do_file_search,
+                                    make_do_file_search(result),
                                 )
                             )
                 else:
@@ -3842,29 +3851,6 @@ async def agent_openai(
                                 message_content=content.text.value,
                             ),
                         )
-            # Run actions which have are waiting for an event which was seen
-            still_waiting = []
-            while waiting:
-                action_waiting_for_event, make_action = waiting.pop(0)
-                if (
-                    (
-                        not isinstance(action_waiting_for_event, (dict, list))
-                        and action_waiting_for_event in previous_event_types
-                    ) or (
-                        isinstance(action_waiting_for_event, list)
-                        and set(action_waiting_for_event).intersection(previous_event_types)
-                    ) or (
-                        isinstance(action_waiting_for_event, dict)
-                        and set(action_waiting_for_event.values()).issubset(previous_event_types)
-                    )
-                ):
-                    await action_stream_insert(await make_action())
-                else:
-                    still_waiting.append(
-                        (action_waiting_for_event, make_action)
-                    )
-            waiting.extend(still_waiting)
-            # TODO Support on-next-tick waiting again instead of ever seen
         except Exception as error:
             traceback.print_exc()
             yield AGIEvent(
@@ -4063,6 +4049,9 @@ async def main(
     log = None,
     kvstore: KVStore = None,
     action_stream: AGIActionStream = None,
+    action_stream_insert: Callable[[Any], Awaitable[Any]] = None,
+    waiting_event_stream: AGIEventStream = None,
+    waiting_event_stream_insert: Callable[[Any], Awaitable[Any]] = None,
     openai_api_key: str = None,
     openai_base_url: Optional[str] = None,
     pane: Optional[libtmux.Pane] = None,
@@ -4094,6 +4083,7 @@ async def main(
     threads = AsyncioLockedCurrentlyDict()
 
     async with kvstore, asyncio.TaskGroup() as tg:
+        # Raw Input Action Stream
         unvalidated_user_input_action_stream = pdb_action_stream(
             tg,
             user_name,
@@ -4103,20 +4093,31 @@ async def main(
             pane=pane,
         )
 
-        user_input_action_stream_queue = asyncio.Queue()
+        # Waiting Event Stream and Callbacks
+        if waiting_event_stream is None and waiting_event_stream_insert is None:
+            waiting_event_stream_queue = asyncio.Queue()
+            async def waiting_event_stream_queue_iterator(queue):
+                # TODO Stop condition/asyncio.Event
+                while True:
+                    new_waiting_event = await queue.get()
+                    snoop.pp(new_waiting_event)
+                    yield new_waiting_event
+            waiting_event_stream = waiting_event_stream_queue_iterator(waiting_event_stream_queue)
+            waiting_event_stream_insert = waiting_event_stream_queue.put
 
-        async def user_input_action_stream_queue_iterator(queue):
-            # TODO Stop condition/asyncio.Event
-            while True:
-                yield await queue.get()
-
-        action_stream = user_input_action_stream_queue_iterator(
-            user_input_action_stream_queue,
-        )
-        action_stream_insert = user_input_action_stream_queue.put
-
+        # AGI Action Stream
+        if action_stream is None and action_stream_insert is None:
+            user_input_action_stream_queue = asyncio.Queue()
+            async def user_input_action_stream_queue_iterator(queue):
+                # TODO Stop condition/asyncio.Event
+                while True:
+                    new_action = await queue.get()
+                    snoop.pp(new_action)
+                    yield new_action
+            action_stream = user_input_action_stream_queue_iterator(user_input_action_stream_queue)
+            action_stream_insert = user_input_action_stream_queue.put
         for action in action_stream_seed:
-            await user_input_action_stream_queue.put(action)
+            await action_stream_insert(action)
 
         if openai_api_key:
             agent_events = agent_openai(
@@ -4125,6 +4126,7 @@ async def main(
                 kvstore,
                 action_stream,
                 action_stream_insert,
+                waiting_event_stream_insert,
                 openai_api_key,
                 openai_base_url=openai_base_url,
             )
@@ -4135,11 +4137,22 @@ async def main(
 
         waiting = []
 
+        waiting_event_stream_iter = (
+            waiting_event_stream.__aiter__()
+        )
         unvalidated_user_input_action_stream_iter = (
             unvalidated_user_input_action_stream.__aiter__()
         )
         agent_events_iter = agent_events.__aiter__()
         work = {
+            tg.create_task(
+                ignore_stopasynciteration(
+                    waiting_event_stream_iter.__anext__()
+                )
+            ): (
+                "system.waiting_event_stream",
+                waiting_event_stream_iter,
+            ),
             tg.create_task(
                 ignore_stopasynciteration(
                     unvalidated_user_input_action_stream_iter.__anext__()
@@ -4167,7 +4180,14 @@ async def main(
                 active_thread_currently_undefined = (
                     threads.currently == CURRENTLY_UNDEFINED
                 )
-            if work_name == "agent.events":
+            if work_name == "system.waiting_event_stream":
+                work[
+                    tg.create_task(
+                        ignore_stopasynciteration(work_ctx.__anext__())
+                    )
+                ] = (work_name, work_ctx)
+                waiting.append(result)
+            elif work_name == "agent.events":
                 # Run actions which have are waiting for an event which was seen
                 previous_event_types.add(result.event_type)
                 work[
@@ -4346,7 +4366,7 @@ async def main(
                     ):
                         # TODO Change this to sleep within create_task
                         await asyncio.sleep(5)
-                        await user_input_action_stream_queue.put(
+                        await action_stream_insert(
                             AGIAction(
                                 action_type=AGIActionType.RUN_THREAD,
                                 action_data=AGIActionRunThread(
@@ -4459,9 +4479,9 @@ async def main(
                         and set(action_waiting_for_event.values()).issubset(previous_event_types)
                     )
                 ):
-                    await user_input_action_stream_queue.put(
-                        await make_action()
-                    )
+                    waiting_complete_action_made = await make_action()
+                    snoop.pp(waiting_complete_action_made)
+                    await action_stream_insert(waiting_complete_action_made)
                 else:
                     still_waiting.append(
                         (action_waiting_for_event, make_action)
