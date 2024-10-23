@@ -3617,11 +3617,11 @@ async def agent_openai(
                                 message_content=content.text.value,
                             ),
                         )
-        except:
+        except Exception as error:
             traceback.print_exc()
             yield AGIEvent(
                 event_type=AGIEventType.ERROR,
-                event_data=traceback.format_exc(),
+                event_data=error,
             )
 
     yield AGIEvent(
@@ -3678,10 +3678,37 @@ class AsyncioLockedCurrentlyDict(collections.UserDict):
 
 
 async def pdb_action_stream(tg, user_name, agents, threads):
+    # TODO Take ALICE_INPUT from args
+    alice_input = os.environ["ALICE_INPUT"]
+    alice_input_last_line = os.environ["ALICE_INPUT_LAST_LINE"]
+
+    file_path = alice_input
+    line_number_path = alice_input_last_line
+    sleep_time = 0.01
+
+    last_hash = None
+    file_size = 0
+    line_number = 0
+
+    file_path = pathlib.Path(file_path)
+    line_number_path = pathlib.Path(line_number_path)
+
+    # Try to read the last stored line number from the file
+    stored_ln = line_number_path.read_text().strip()
+    if stored_ln.isdigit():
+        line_number = int(stored_ln)
+
     while True:
-        yield await asyncio.to_thread(
-            pdb_action_stream_get_user_input, user_name
-        )
+        # TODO Add file_path.stat() optimization on read
+        lines = file_path.read_text().split("\n")
+        for i in range(line_number, line_number + len(lines[line_number:])):
+            if not lines[i].strip():
+                continue
+            line_number += 1
+            yield lines[i]
+            line_number_path.write_text(str(i) + "\n")
+            break
+        await asyncio.sleep(sleep_time)
 
 
 class AGIThinClientNeedsModelAccessError(Exception):
@@ -3810,14 +3837,27 @@ async def main(
     agents = AsyncioLockedCurrentlyDict()
     threads = AsyncioLockedCurrentlyDict()
 
+    alice_input_path = pathlib.Path(
+        "~", ".local", "agi", agi_name, "input.txt",
+    ).expanduser()
+    alice_input_path.parent.mkdir(parents=True, exist_ok=True)
+    alice_input_path.write_text("")
+
+    alice_input_last_line_path = alice_input_path.parent.joinpath(
+        "input-last-line.txt",
+    )
+    alice_input_last_line_path.write_text("")
+
+    os.environ["ALICE_INPUT"] = str(alice_input_path.resolve())
+    os.environ["ALICE_INPUT_LAST_LINE"] = str(alice_input_last_line_path.resolve())
+
     async with kvstore, asyncio.TaskGroup() as tg:
-        if not action_stream:
-            unvalidated_user_input_action_stream = pdb_action_stream(
-                tg,
-                user_name,
-                agents,
-                threads,
-            )
+        unvalidated_user_input_action_stream = pdb_action_stream(
+            tg,
+            user_name,
+            agents,
+            threads,
+        )
 
         user_input_action_stream_queue = asyncio.Queue()
 
@@ -3880,7 +3920,9 @@ async def main(
                 ] = (work_name, work_ctx)
                 agent_event = result
                 logger.debug("agent_event: %s", pprint.pformat(agent_event))
-                if agent_event.event_type in (
+                if agent_event.event_type == AGIEventType.ERROR:
+                    raise Exception(f"Agent {agi_name!r} threw an error") from agent_event.event_data
+                elif agent_event.event_type in (
                     AGIEventType.NEW_AGENT_CREATED,
                     AGIEventType.EXISTING_AGENT_RETRIEVED,
                 ):
@@ -3896,6 +3938,12 @@ async def main(
                                 agent_id=agent_event.event_data.agent_id,
                             ),
                         )
+                    # Ready for child shell
+                    if os.fork() == 0:
+                        cmd = [
+                            "bash",
+                        ]
+                        os.execvp(cmd[0], cmd)
                 elif agent_event.event_type == AGIEventType.NEW_THREAD_CREATED:
                     async with threads:
                         threads[agent_event.event_data.thread_id] = AGIState(
