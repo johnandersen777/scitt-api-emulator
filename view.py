@@ -1,3 +1,20 @@
+"""
+View SCITT Entries
+##################
+
+Simple UI to view SCITT entries
+
+.. image:: https://user-images.githubusercontent.com/5950433/290296669-0db2ba1b-776d-4ab5-8f5b-95e56c363da5.png
+
+Usage
+*****
+
+.. code-block:: console
+
+    $ pip install -U pip setuptools wheel
+    $ pip install -U fastapi fastui pycose hypercorn
+    $ hypercorn -b 0.0.0.0:8001 view:app
+"""
 import json
 import pathlib
 import logging
