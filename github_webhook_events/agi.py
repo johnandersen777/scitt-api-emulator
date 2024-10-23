@@ -3784,9 +3784,10 @@ async def read_unix_socket_lines(path):
 
 async def pdb_action_stream(tg, user_name, agi_name, agents, threads, pane: Optional[libtmux.Pane] = None):
     # TODO Take ALICE_INPUT from args
-    alice_input = pane.window.session.show_environment()[f"{agi_name}_INPUT"]
-    alice_input_sock = pane.window.session.show_environment()[f"{agi_name}_INPUT_SOCK"]
-    alice_input_last_line = pane.window.session.show_environment()[f"{agi_name}_INPUT_LAST_LINE"]
+    if pane is not None:
+        alice_input = pane.window.session.show_environment()[f"{agi_name}_INPUT"]
+        alice_input_sock = pane.window.session.show_environment()[f"{agi_name}_INPUT_SOCK"]
+        alice_input_last_line = pane.window.session.show_environment()[f"{agi_name}_INPUT_LAST_LINE"]
 
     if pathlib.Path(alice_input_sock).is_socket():
         await connect_and_read(alice_input_sock)
