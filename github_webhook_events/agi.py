@@ -3244,6 +3244,12 @@ def make_argparse_parser(argv=None):
         type=str,
     )
     parser.add_argument(
+        "--input-socket-path",
+        dest="input_socket_path",
+        default=None,
+        type=str,
+    )
+    parser.add_argument(
         "--agi-name",
         dest="agi_name",
         default="alice",
@@ -3696,35 +3702,47 @@ class AsyncioLockedCurrentlyDict(collections.UserDict):
         await self.lock.__aexit__(exc_type, exc_value, traceback)
 
 
+async def read_unix_socket_lines(path):
+    # Connect to the Unix socket
+    reader, writer = await asyncio.open_unix_connection(path)
+    try:
+        while True:
+            # Read a line from the socket
+            line = await reader.readline()
+            # If line is empty, EOF is reached
+            if not line:
+                break
+            # Decode the line and yield it
+            yield line.decode().strip()
+    finally:
+        # Close the connection
+        writer.close()
+        await writer.wait_closed()
+
+
 async def pdb_action_stream(tg, user_name, agi_name, agents, threads, pane: Optional[libtmux.Pane] = None):
     # TODO Take ALICE_INPUT from args
     alice_input = pane.window.session.show_environment()[f"{agi_name}_INPUT"]
+    alice_input_sock = pane.window.session.show_environment()[f"{agi_name}_INPUT_SOCK"]
     alice_input_last_line = pane.window.session.show_environment()[f"{agi_name}_INPUT_LAST_LINE"]
 
-    file_path = alice_input
-    line_number_path = alice_input_last_line
+    if pathlib.Path(alice_input_sock).is_socket():
+        async for line in read_unix_socket_lines(alice_input_sock):
+            yield line
+        return
+
+    file_path = pathlib.Path(alice_input)
+    line_number_path = pathlib.Path(alice_input_last_line)
     sleep_time = 0.01
 
     last_hash = None
     file_size = 0
     line_number = 0
 
-    file_path = pathlib.Path(file_path)
-    line_number_path = pathlib.Path(line_number_path)
-
     # Try to read the last stored line number from the file
-    window = pane.session.new_window(attach=False)
-    pane = window.split(attach=False)
-    pane.send_keys(f'echo last_line=$(cat "${agi_name}_INPUT_LAST_LINE")', enter=True)
-    line = ""
-    while not line.startswith("last_line="):
-        for line in pane.capture_pane():
-            stored_ln = line.split("last_line=")[-1]
-            if stored_ln.isdigit():
-                line_number = int(stored_ln)
-                break
-            break
-        await asyncio.sleep(sleep_time)
+    stored_ln = line_number_path.read_text().strip()
+    if stored_ln.isdigit():
+        line_number = int(stored_ln)
 
     while True:
         # TODO Add file_path.stat() optimization on read
@@ -3904,6 +3922,15 @@ async def main(
         async for (work_name, work_ctx), result in concurrently(work):
             if result is STOP_ASYNC_ITERATION:
                 continue
+            async with agents:
+                active_agent_currently_undefined = (
+                    agents.currently == CURRENTLY_UNDEFINED
+                )
+            async with threads:
+                active_thread_currently_undefined = (
+                    threads.currently == CURRENTLY_UNDEFINED
+                )
+            snoop.pp(active_agent_currently_undefined, active_thread_currently_undefined)
             if work_name == "agent.events":
                 work[
                     tg.create_task(
@@ -3930,47 +3957,75 @@ async def main(
                                 agent_id=agent_event.event_data.agent_id,
                             ),
                         )
-                    with snoop():
-                        # Ready for child shell
-                        if os.environ.get("NO_SHELL", "1") != "1" and os.fork() == 0:
-                            cmd = [
-                                "bash",
-                            ]
-                            os.execvp(cmd[0], cmd)
-                        # tmux support
-                        if pane is not None:
-                            # TODO Combine into thread?
-                            # threading.Thread(target=a_shell_for_a_ghost_send_keys,
-                            #                  args=[pane, motd_string, 1]).run()
-                            tempdir = pathlib.Path(pane.window.session.show_environment()[f"{agi_name}_INPUT"]).parent
+                    # Ready for child shell
+                    if os.environ.get("NO_SHELL", "1") != "1" and os.fork() == 0:
+                        cmd = [
+                            "bash",
+                        ]
+                        snoop.pp(cmd)
+                        # os.execvp(cmd[0], cmd)
+                    # tmux support
+                    if pane is not None:
+                        # TODO Combine into thread?
+                        # threading.Thread(target=a_shell_for_a_ghost_send_keys,
+                        #                  args=[pane, motd_string, 1]).run()
+                        tempdir = pathlib.Path(pane.window.session.show_environment()[f"{agi_name}_INPUT"]).parent
 
-                            pane.send_keys(f'', enter=True)
-                            pane.send_keys('if [ "x${CALLER_PATH}" = "x" ]; then export CALLER_PATH="' + str(tempdir) + '"; fi', enter=True)
+                        pane.send_keys(f'', enter=True)
+                        pane.send_keys('if [ "x${CALLER_PATH}" = "x" ]; then export CALLER_PATH="' + str(tempdir) + '"; fi', enter=True)
 
-                            pane.send_keys(f'', enter=True)
-                            pane.send_keys("source ${CALLER_PATH}/util.sh", enter=True)
-                            # pane.send_keys('if [ ! -f "${CALLER_PATH}/policy_engine.logs.txt" ]; then NO_CELERY=1 python -u ${CALLER_PATH}/policy_engine.py api --workers 1 1>"${CALLER_PATH}/policy_engine.logs.txt" 2>&1 & fi', enter=True)
-                            pane.send_keys(f'', enter=True)
+                        pane.send_keys(f'', enter=True)
+                        pane.send_keys("source ${CALLER_PATH}/util.sh", enter=True)
+                        # pane.send_keys('if [ ! -f "${CALLER_PATH}/policy_engine.logs.txt" ]; then NO_CELERY=1 python -u ${CALLER_PATH}/policy_engine.py api --workers 1 1>"${CALLER_PATH}/policy_engine.logs.txt" 2>&1 & fi', enter=True)
+                        pane.send_keys(f'', enter=True)
 
-                            # pane.send_keys(f'cat >>EOF', enter=True)
-                            # a_shell_for_a_ghost_send_keys(pane, motd_string, erase_after=1)
-                            # pane.send_keys(f'EOF', enter=True)
-                            # pane.send_keys(f'', enter=True)
+                        # pane.send_keys(f'cat >>EOF', enter=True)
+                        # a_shell_for_a_ghost_send_keys(pane, motd_string, erase_after=1)
+                        # pane.send_keys(f'EOF', enter=True)
+                        # pane.send_keys(f'', enter=True)
 
-                            pane.send_keys(f'export {agi_name.upper()}_INPUT="' + '${CALLER_PATH}/input.txt"', enter=True)
-                            pane.send_keys(f'export {agi_name.upper()}_INPUT_LAST_LINE="' + '${CALLER_PATH}/input-last-line.txt"', enter=True)
+                        pane.send_keys(f'export {agi_name.upper()}_INPUT="' + '${CALLER_PATH}/input.txt"', enter=True)
+                        pane.send_keys(f'export {agi_name.upper()}_INPUT_SOCK="' + '${CALLER_PATH}/input.sock"', enter=True)
+                        pane.send_keys(f'export {agi_name.upper()}_INPUT_LAST_LINE="' + '${CALLER_PATH}/input-last-line.txt"', enter=True)
 
-                            # pane.send_keys(f'cat >>EOF', enter=True)
-                            success_string = "echo \"${PS1} $ We\'re in... awaiting instructions at $" + agi_name.upper() + "_INPUT\""
-                            # a_shell_for_a_ghost_send_keys(pane, success_string, erase_after=4.2)
-                            a_shell_for_a_ghost_send_keys(pane, success_string)
-                            pane.send_keys(f'', enter=True)
-                            # pane.send_keys(f'EOF', enter=True)
-                            # pane.send_keys(f'', enter=True)
-                            pane.send_keys(f'ls -lAF ${agi_name.upper()}_INPUT', enter=True)
+                        # TODO
+                        # TODO
+                        # TODO
+                        # TODO
+                        # TODO
+                        # TODO
+                        # TODO
+                        # TODO
+                        # TODO
+                        # TODO
+                        # TODO How do we map the sockets?
+                        # TODO pdxjohnny to username
+                        user_name = 'pdxjohnny'
+                        # TODO
+                        # TODO
+                        # TODO
+                        # TODO
+                        # TODO
+                        # TODO
+                        # TODO
+                        # TODO
 
-                            a_shell_for_a_ghost_send_keys(pane, "echo ${PS1}" + motd_string)
-                            pane.send_keys(f'', enter=True)
+                        pane.send_keys(f'rm -fv /tmp/{user_name}-input.sock ${agi_name.upper()}_INPUT_SOCK', enter=True)
+                        pane.send_keys(f'ln -s ${agi_name.upper()}_INPUT_SOCK /tmp/{user_name}-input.sock', enter=True)
+                        pane.send_keys(f'socat UNIX-LISTEN:${agi_name.upper()}_INPUT_SOCK,fork EXEC:"/usr/bin/tail -F ${agi_name.upper()}_INPUT" &', enter=True)
+                        pane.send_keys(f'ls -lAF /tmp/{user_name}-input.sock', enter=True)
+
+                        # pane.send_keys(f'cat >>EOF', enter=True)
+                        success_string = "echo \"${PS1} $ We\'re in... awaiting instructions at $" + agi_name.upper() + "_INPUT\""
+                        # a_shell_for_a_ghost_send_keys(pane, success_string, erase_after=4.2)
+                        a_shell_for_a_ghost_send_keys(pane, success_string)
+                        pane.send_keys(f'', enter=True)
+                        # pane.send_keys(f'EOF', enter=True)
+                        # pane.send_keys(f'', enter=True)
+                        pane.send_keys(f'ls -lAF ${agi_name.upper()}_INPUT', enter=True)
+
+                        a_shell_for_a_ghost_send_keys(pane, "echo ${PS1}" + motd_string)
+                        pane.send_keys(f'', enter=True)
                 elif agent_event.event_type == AGIEventType.NEW_THREAD_CREATED:
                     async with threads:
                         threads[agent_event.event_data.thread_id] = AGIState(
@@ -4112,11 +4167,7 @@ async def main(
                 if active_agent_currently_undefined:
                     await tg.create_task(agents.currently_exists.wait())
                 """
-                async with threads:
-                    active_thread_currently_undefined = (
-                        threads.currently == CURRENTLY_UNDEFINED
-                    )
-                if active_thread_currently_undefined:
+                if not active_agent_currently_undefined and active_thread_currently_undefined:
                     async with agents:
                         current_agent = agents.currently
                     if not isinstance(user_input, AGIAction):
@@ -4143,6 +4194,23 @@ async def main(
                                 agent_id=current_agent.state_data.agent_id,
                             ),
                         ),
+                    )
+                elif active_agent_currently_undefined or active_thread_currently_undefined:
+                    waiting.append(
+                        (
+                            AGIEventType.NEW_THREAD_CREATED,
+                            async_lambda(
+                                lambda: AGIAction(
+                                    action_type=AGIActionType.ADD_MESSAGE,
+                                    action_data=AGIActionAddMessage(
+                                        agent_id=agents.currently.state_data.agent_id,
+                                        thread_id=threads.currently.state_data.thread_id,
+                                        message_role="user",
+                                        message_content=user_input,
+                                    ),
+                                )
+                            )
+                        )
                     )
                 else:
                     await user_input_action_stream_queue.put(
@@ -4181,7 +4249,7 @@ def a_shell_for_a_ghost_send_keys(pane, send_string, erase_after=None):
             time.sleep(0.01)
 
 
-async def tmux_test(*args, socket_path=None, **kwargs):
+async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
     agi_name = "alice"
     ps1 = f'{agi_name} $ '
 
@@ -4250,6 +4318,7 @@ async def tmux_test(*args, socket_path=None, **kwargs):
         session.set_environment(tempdir_env_var, tempdir)
 
         session.set_environment(f"{agi_name}_INPUT", str(pathlib.Path(tempdir, "input.txt")))
+        session.set_environment(f"{agi_name}_INPUT_SOCK", str(input_socket_path))
         session.set_environment(f"{agi_name}_INPUT_LAST_LINE", str(pathlib.Path(tempdir, "input-last-line.txt")))
 
         pane.send_keys(
@@ -4305,7 +4374,7 @@ async def tmux_test(*args, socket_path=None, **kwargs):
                             env=None,
                             run=textwrap.dedent(
                                 """
-                                echo HI
+                                echo Hello World
                                 """
                             ),
                         )
@@ -4396,13 +4465,15 @@ from fastapi import FastAPI, BackgroundTasks
 
 app = FastAPI()
 
-def run_tmux_attach(socket_path):
+def run_tmux_attach(socket_path, input_socket_path):
     cmd = [
         sys.executable,
         "-u",
         str(pathlib.Path(__file__).resolve()),
         "--socket-path",
         socket_path,
+        "--input-socket-path",
+        input_socket_path,
     ]
     with open(os.devnull, "w") as devnull:
         subprocess.Popen(
@@ -4416,7 +4487,7 @@ def run_tmux_attach(socket_path):
 
 @app.get("/connect/{socket_stem}")
 async def connect(socket_stem: str, background_tasks: BackgroundTasks):
-    background_tasks.add_task(run_tmux_attach, f"/tmp/{socket_stem}.sock")
+    background_tasks.add_task(run_tmux_attach, f"/tmp/{socket_stem}.sock", f"/tmp/{socket_stem}-input.sock")
     # parser = make_argparse_parser()
     # args = parser.parse_args(["--socket-path", f"/tmp/{socket_stem}.sock"])
     # task = asyncio.create_task(tmux_test(**vars(args)))

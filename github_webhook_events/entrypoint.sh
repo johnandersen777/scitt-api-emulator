@@ -12,7 +12,7 @@ export EDITOR=vim
 # TODO Per distro dependencies via /usr/lib/os-release and
 # /etc/os-release bash source | env
 if [ ! -f /usr/bin/node ]; then
-  dnf install -y git vim openssh jq python python-pip unzip nodejs
+  dnf install -y git vim openssh socat jq python python-pip unzip nodejs
 fi
 
 if [ ! -f /usr/bin/deno ]; then
