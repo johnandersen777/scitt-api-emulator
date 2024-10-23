@@ -11,6 +11,8 @@ Targets are new commits, branches, tags, and their CI/CD (status check) results
   - https://github.com/in-toto/attestation/blob/99d851228fe284c66b2cde353a6693c5eff69db1/spec/v1/statement.md
   - https://github.com/in-toto/attestation/blob/99d851228fe284c66b2cde353a6693c5eff69db1/spec/predicates/test-result.md
   - https://github.com/in-toto/attestation/blob/99d851228fe284c66b2cde353a6693c5eff69db1/spec/predicates/cyclonedx.md
+    - https://github.com/in-toto/attestation/blob/99d851228fe284c66b2cde353a6693c5eff69db1/spec/predicates/cyclonedx.md#fields
+    - https://github.com/in-toto/attestation/blob/474f261958740915df273c58f5160f8b51318231/spec/predicates/vuln.md?plain=1#L115
   - https://github.com/in-toto/attestation/blob/main/spec/v1/resource_descriptor.md
   - https://github.com/aquasecurity/trivy/blob/950e431f0f9759f053dc2fbe10e1869696c957f3/docs/docs/supply-chain/vex.md#openvex
 - https://docs.github.com/en/rest/repos/contents?apiVersion=2022-11-28#download-a-repository-archive-tar
