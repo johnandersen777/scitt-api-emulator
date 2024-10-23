@@ -57,7 +57,7 @@ For more examples see
 ## Deployment Details
 
 ```console
-$ touch running; while [[ -f running ]]; do git pull && PYTHONPATH=$PWD:$PYTHONPATH PORT=8000 timeout "$((60 * 60 * 24))s" bash start.sh 2>&1 | tee -a docs/_static/logs.txt; done
+$ touch running; while [[ -f running ]]; do git pull && PORT=8000 timeout "$((60 * 60 * 24))s" bash start.sh 2>&1 | tee -a docs/_static/logs.txt; done
 ```
 
 **requirements.txt**
