@@ -73,7 +73,7 @@ def entries_table() -> list[AnyComponent]:
             components=[
                 c.Heading(text="SCITT UI", level=1),
                 c.Markdown(
-                    text="[https://scitt.unstable.chadig.com](https://scitt.unstable.chadig.com)",
+                    text="\nDocumentation: [https://scitt.unstable.chadig.com](https://scitt.unstable.chadig.com)\n\n",
                 ),
                 c.Heading(text="Entries", level=2),  # renders `<h2>Entries</h2>`
                 c.Table[
