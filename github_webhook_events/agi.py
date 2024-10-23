@@ -3786,9 +3786,6 @@ async def DEBUG_TEMP_message_handler(user_name,
             tempdir = pathlib.Path(
                 pane.window.session.show_environment()[tempdir_env_var],
             )
-            if not tempdir.is_dir():
-                snoop.pp(pane.window.session.show_environment())
-                raise Exception(f"{tempdir} is not dir")
             # Proposed workflow to be submitted to policy engine to get clear
             # for take off (aka workload id and exec in phase 0). Executing the
             # policy aka the workflow (would be the one we insert to once
@@ -3796,28 +3793,35 @@ async def DEBUG_TEMP_message_handler(user_name,
             response = AGIOpenAIAssistantResponse.model_validate_json(
                 agent_event.event_data.message_content
             )
-            proposed_workflow_path = pathlib.Path(tempdir, "proposed-workflow.yml")
-            proposed_workflow_path.write_text(
-                yaml.dump(
-                    json.loads(
-                        response.workflow.model_dump_json()
-                   ),
-                   default_flow_style=False,
-                   sort_keys=True,
+            proposed_workflow_contents = yaml.dump(
+                json.loads(workflow.model_dump_json()),
+                default_flow_style=False,
+                sort_keys=True,
+            )
+            request_contents = yaml.dump(
+                json.loads(
+                    PolicyEngineRequest(
+                        inputs={},
+                        context={},
+                        stack={},
+                        workflow=workflow,
+                    ).model_dump_json(),
                 )
             )
-            request_path = pathlib.Path(tempdir, "request.yml")
-            request_path.write_text(
-                yaml.dump(
-                    json.loads(
-                        PolicyEngineRequest(
-                            inputs={},
-                            context={},
-                            stack={},
-                            workflow=response.workflow,
-                        ).model_dump_json(),
-                    )
-                )
+            pane.send_keys('if [ "x${CALLER_PATH}" = "x" ]; then export CALLER_PATH="' + str(tempdir) + '"; fi', enter=True)
+            pane.send_keys(
+                "cat > \"${CALLER_PATH}/proposed-workflow.yml\" <<\'WRITE_OUT_SH_EOF\'"
+                + "\n"
+                + proposed_workflow_contents
+                + "\nWRITE_OUT_SH_EOF",
+                enter=True,
+            )
+            pane.send_keys(
+                "cat > \"${CALLER_PATH}/request.yml\" <<\'WRITE_OUT_SH_EOF\'"
+                + "\n"
+                + request_contents
+                + "\nWRITE_OUT_SH_EOF",
+                enter=True,
             )
             pane.send_keys(f"submit_policy_engine_request", enter=True)
         else:
