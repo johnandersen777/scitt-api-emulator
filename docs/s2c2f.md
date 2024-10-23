@@ -1,5 +1,7 @@
 # S2C2F
 
+- [ietf-scitt/use-cases#18: Use Case: Attestations of alignment to S2C2F and org overlays](https://github.com/ietf-scitt/use-cases/pull/18)
+
 Upstream for S2C2F sections: https://github.com/ossf/s2c2f/blob/98803e0a558e6d8cef4d2770864ffd3cf7618c65/specification/framework.md#appendix-relation-to-scitt
 
 ## Appendix: Relation to SCITT
