@@ -32,15 +32,22 @@ RUN set -x \
   && echo 'StreamLocalBindUnlink yes' | tee -a /etc/ssh/sshd_config \
   && echo 'PermitOpen any' | tee -a /etc/ssh/sshd_config
 
+# TODO Caching
+# RUN bash -xec "$(grep 'pip install' /host/agi.py | head -n 1)"
+RUN set -x \
+  && python -m pip install -U pip setuptools wheel snoop openai keyring libtmux
+
 COPY server_motd /host/
-
-COPY ./openai_assistant_instructions.md /host/
-COPY ./agi.py /host/
-
-RUN bash -xec "$(grep 'pip install' /host/agi.py | head -n 1)"
-
+COPY openai_assistant_instructions.md /host/
+COPY agi.py /host/
 COPY util.sh /host/
 COPY entrypoint-server.sh /host/
+COPY entrypoint.sh /host/
+
+RUN set -x \
+  && export CALLER_PATH=/host \
+  && bash -xe /host/entrypoint.sh
+
 COPY locked-shell.sh /bin/
 
 RUN set -x \

@@ -291,6 +291,7 @@ import yaml
 import snoop
 import pytest
 import aiohttp
+import libtmux
 import gidgethub.apps
 import gidgethub.aiohttp
 import gunicorn.app.base
@@ -3695,10 +3696,10 @@ class AsyncioLockedCurrentlyDict(collections.UserDict):
         await self.lock.__aexit__(exc_type, exc_value, traceback)
 
 
-async def pdb_action_stream(tg, user_name, agi_name, agents, threads):
+async def pdb_action_stream(tg, user_name, agi_name, agents, threads, pane: Optional[libtmux.Pane] = None):
     # TODO Take ALICE_INPUT from args
-    alice_input = os.environ[f"{agi_name}_INPUT"]
-    alice_input_last_line = os.environ[f"{agi_name}_INPUT_LAST_LINE"]
+    alice_input = pane.window.session.show_environment()[f"{agi_name}_INPUT"]
+    alice_input_last_line = pane.window.session.show_environment()[f"{agi_name}_INPUT_LAST_LINE"]
 
     file_path = alice_input
     line_number_path = alice_input_last_line
@@ -3838,6 +3839,7 @@ async def main(
             agi_name,
             agents,
             threads,
+            pane=pane,
         )
 
         user_input_action_stream_queue = asyncio.Queue()
@@ -3930,7 +3932,7 @@ async def main(
                         # TODO Combine into thread?
                         # threading.Thread(target=a_shell_for_a_ghost_send_keys,
                         #                  args=[pane, motd_string, 1]).run()
-                        tempdir = pathlib.Path(os.environ[f"{agi_name}_INPUT"]).parent
+                        tempdir = pathlib.Path(pane.window.session.show_environment()[f"{agi_name}_INPUT"]).parent
                         pane.send_keys(f'', enter=True)
                         pane.send_keys('if [ "x${CALLER_PATH}" = "x" ]; then export CALLER_PATH="' + str(tempdir) + '"; fi', enter=True)
 
@@ -4189,114 +4191,138 @@ async def tmux_test(*args, socket_path=None, **kwargs):
     agi_name = "alice"
     ps1 = f'{agi_name} $ '
 
-    user_tempdir_path = pathlib.Path("~", ".tmp").expanduser()
-    if not user_tempdir_path.is_dir():
-        user_tempdir_path.mkdir(parents=True)
+    pane = None
+    tempdir = None
+    possible_tempdir = tempdir
+    try:
+        server = libtmux.Server(
+            socket_path=socket_path,
+        )
+        sessions = server.attached_sessions
+        if not sessions:
+            sessions = server.sessions
+        session = sessions[0]
+        tempdir_lookup_env_var = f'TEMPDIR_ENV_VAR_TMUX_WINDOW_{session.active_window.id.replace("@", "")}'
+        # Make a new tempdir in case old one doesn't exist
+        tempdir_env_var = f"TEMPDIR_ENV_VAR_{uuid.uuid4()}".replace("-", "_")
+        env = session.show_environment()
+        if tempdir_lookup_env_var in env:
+            tempdir_env_var = env[tempdir_lookup_env_var]
+            possible_tempdir = env[tempdir_env_var]
+            if pathlib.Path(possible_tempdir).is_dir():
+                tempdir = possible_tempdir
 
-    with tempfile.TemporaryDirectory(dir=user_tempdir_path, delete=False) as tempdir:
-        pane = None
-        possible_tempdir = tempdir
-        try:
-            server = libtmux.Server(
-                socket_path=socket_path,
-            )
-            sessions = server.attached_sessions
-            if not sessions:
-                sessions = server.sessions
-            session = sessions[0]
-            tempdir_lookup_env_var = f'TEMPDIR_ENV_VAR_TMUX_WINDOW_{session.active_window.id.replace("@", "")}'
-            # Make a new tempdir in case old one doesn't exist
-            tempdir_env_var = f"TEMPDIR_ENV_VAR_{uuid.uuid4()}".replace("-", "_")
-            env = session.show_environment()
-            if tempdir_lookup_env_var in env:
-                tempdir_env_var = env[tempdir_lookup_env_var]
-                possible_tempdir = env[tempdir_env_var]
-                if pathlib.Path(possible_tempdir).is_dir():
-                    tempdir = possible_tempdir
-            pane = None
-            for check_pane in session.active_window.panes:
-                if ps1.strip() in check_pane.capture_pane():
-                    pane = check_pane
-                    break
-            session.set_environment(tempdir_lookup_env_var, tempdir_env_var)
-            session.set_environment(tempdir_env_var, tempdir)
+        for check_pane in session.active_window.panes:
+            if ps1.strip() in check_pane.capture_pane():
+                pane = check_pane
+                break
 
-            alice_input_path = pathlib.Path(tempdir, "input.txt").resolve()
-            alice_input_path.parent.mkdir(parents=True, exist_ok=True)
-            alice_input_path.write_text("")
+        if pane is None:
+            pane = session.active_window.active_pane.split()
 
-            alice_input_last_line_path = alice_input_path.parent.joinpath(
-                "input-last-line.txt",
-            )
-            alice_input_last_line_path.write_text("")
+        pane.send_keys(
+            textwrap.dedent(
+                r"""
+                if [[ "x${CALLER_PATH}" = "x" ]]; then
+                    export CALLER_PATH="$(mktemp -d)"
+                fi
+                mkdir -pv "${CALLER_PATH}"
+                touch "${CALLER_PATH}/input.txt"
+                touch "${CALLER_PATH}/input-last-line.txt"
+                """,
+            ),
+            enter=True,
+        )
 
-            os.environ[f"{agi_name}_INPUT"] = str(alice_input_path.resolve())
-            os.environ[f"{agi_name}_INPUT_LAST_LINE"] = str(alice_input_last_line_path.resolve())
-            session.set_environment(f"{agi_name}_INPUT", os.environ[f"{agi_name}_INPUT"])
-            session.set_environment(f"{agi_name}_INPUT_LAST_LINE", os.environ[f"{agi_name}_INPUT_LAST_LINE"])
+        if tempdir is None:
+            # TODO(windows) Env dumping changes on Windows
+            echo_caller_path = 'echo "CALLER_PATH=${CALLER_PATH}"'
+            pane.send_keys(echo_caller_path, enter=True)
+            while not any([line.startswith("CALLER_PATH=") for line in pane.capture_pane()]):
+                time.sleep(0.1)
 
-            pathlib.Path(tempdir, "util.sh").write_text(
-                pathlib.Path(__file__).parent.joinpath("util.sh").read_text(),
-            )
+            tempdir = list(
+                [
+                    line.strip().split("CALLER_PATH=", maxsplit=1)[-1]
+                    for line in pane.capture_pane()
+                    if line.startswith("CALLER_PATH=/")
+                ]
+            )[0]
 
-            # TODO Because of rate limit issues need to be able to pass github token
-            headers = {}
-            github_token = None
-            if github_token:
-                headers["Authorization"] = f"Bearer {github_token}"
+        export = f'export "CALLER_PATH="{tempdir}"'
+        pane.send_keys(echo_caller_path, enter=True)
 
-            policy_engine_url = "https://github.com/pdxjohnny/scitt-api-emulator/raw/policy_engine_cwt_rebase/scitt_emulator/policy_engine.py"
-            request = urllib.request.Request(policy_engine_url, headers=headers)
-            with urllib.request.urlopen(request) as response:
-                pathlib.Path(tempdir, "policy_engine.py").write_bytes(response.read())
+        session.set_environment(tempdir_lookup_env_var, tempdir_env_var)
+        session.set_environment(tempdir_env_var, tempdir)
 
-            pathlib.Path(tempdir, "entrypoint.sh").write_text(
-                textwrap.dedent(
-                    f"""
-                    #!/usr/bin/env bash
-                    set -xeuo pipefail
+        alice_input_path = pathlib.Path(tempdir, "input.txt")
+        alice_input_last_line_path = pathlib.Path(tempdir, "input-last-line.txt")
+        session.set_environment(f"{agi_name}_INPUT", str(alice_input_path))
+        session.set_environment(f"{agi_name}_INPUT_LAST_LINE", str(alice_input_last_line_path))
 
-                    trap bash EXIT
+        pane.send_keys(
+            r'curl -vfLo "${CALLER_PATH}/policy_engine.py" https://github.com/pdxjohnny/scitt-api-emulator/raw/policy_engine_cwt_rebase/scitt_emulator/policy_engine.py',
+            enter=True,
+        )
 
-                    if [ "x$CALLER_PATH" = "x" ]; then
-                        export CALLER_PATH="{tempdir}"
-                    fi
-                    export PS1='{ps1}'
+        pane.send_keys(
+            'cat > "${CALLER_PATH}/util.sh" <<\'WRITE_OUT_SH_EOF\''
+            + "\n"
+            + pathlib.Path(__file__).parent.joinpath("util.sh").read_text()
+            + "\nWRITE_OUT_SH_EOF",
+            enter=True,
+        )
 
-                    """
-                ).lstrip()
-                + pathlib.Path(__file__).parent.joinpath("entrypoint.sh").read_text()
-                + textwrap.dedent(
-                    r"""
+        pane.send_keys(
+            "cat > \"${CALLER_PATH}/entrypoint.sh\" <<\'WRITE_OUT_SH_EOF\'"
+            + "\n"
+            + textwrap.dedent(
+                f"""
+                #!/usr/bin/env bash
+                set -xeuo pipefail
 
-                    NO_CELERY=1 python -u policy_engine.py api --workers 1 1>"${CALLER_PATH}/policy_engine.logs.txt" 2>&1 &
+                # trap bash EXIT
 
-                    # clear
+                if [ "x$CALLER_PATH" = "x" ]; then
+                    export CALLER_PATH="{tempdir}"
+                fi
+                export PS1='{ps1}'
 
-                    bash
-                    """
-                ).lstrip()
-            )
-            pathlib.Path(tempdir, "entrypoint.sh").chmod(0o0755)
-            if pane is None:
-                pane = session.active_window.active_pane.split()
-                # pane = session.active_window.split(attach=False)
-                pathlib.Path(tempdir, "host_path.txt").write_text(tempdir_env_var)
-                pane.send_keys('set -x', enter=True)
-                pane.send_keys(f'export {tempdir_env_var}="{tempdir}"', enter=True)
-                pane.send_keys('docker run --rm -ti -e CALLER_PATH="/host" -v "${' + tempdir_env_var + '}:/host:z" --entrypoint /host/entrypoint.sh registry.fedoraproject.org/fedora' +'; rm -rfv ${' + tempdir_env_var + '}', enter=True)
+                """
+            ).lstrip()
+            + pathlib.Path(__file__).parent.joinpath("entrypoint.sh").read_text()
+            + textwrap.dedent(
+                r"""
 
-                # TODO Error handling, immediate trampoline python socket nest
-                while ps1.strip() != pane.capture_pane()[-1].strip():
-                    time.sleep(0.1)
+                # NO_CELERY=1 python -u "${CALLER_PATH}/policy_engine.py" api --workers 1 1>"${CALLER_PATH}/policy_engine.logs.txt" 2>&1 &
 
-            await main(*args, pane=pane, **kwargs)
-        finally:
-            with contextlib.suppress(Exception):
-                if pane is not None:
-                    # TODO Some switch to change behavior at runtime
-                    pass
-                    # pane.kill()
+                # clear
+
+                bash
+                """
+            ).lstrip()
+            + "\nWRITE_OUT_SH_EOF",
+            enter=True
+        )
+        pane.send_keys('chmod 700 "${CALLER_PATH}/entrypoint.sh"', enter=True)
+
+        pane.send_keys('source "${CALLER_PATH}/entrypoint.sh"', enter=True)
+
+        # pane.send_keys('set -x', enter=True)
+        # pane.send_keys(f'export {tempdir_env_var}="{tempdir}"', enter=True)
+        # pane.send_keys('docker run --rm -ti -e CALLER_PATH="/host" -v "${' + tempdir_env_var + '}:/host:z" --entrypoint /host/entrypoint.sh registry.fedoraproject.org/fedora' +'; rm -rfv ${' + tempdir_env_var + '}', enter=True)
+
+        # TODO Error handling, immediate trampoline python socket nest
+        while ps1.strip() != pane.capture_pane()[-1].strip():
+            time.sleep(0.1)
+
+        await main(*args, pane=pane, **kwargs)
+    finally:
+        with contextlib.suppress(Exception):
+            if pane is not None:
+                # TODO Some switch to change behavior at runtime
+                pass
+                # pane.kill()
 
         # pane = libtmux.Pane.from_pane_id(pane_id=pane.cmd('split-window', '-P', '-F#{pane_id}').stdout[0], server=pane.server)
 

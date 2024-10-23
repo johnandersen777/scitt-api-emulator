@@ -25,5 +25,5 @@ policy_engine_deps() {
 if [ ! -f "${CALLER_PATH}/policy_engine.py" ]; then
   policy_engine_deps
 
-  curl -sfLO https://github.com/pdxjohnny/scitt-api-emulator/raw/policy_engine_cwt_rebase/scitt_emulator/policy_engine.py
+  curl -sfLo "${CALLER_PATH}/policy_engine.py" https://github.com/pdxjohnny/scitt-api-emulator/raw/policy_engine_cwt_rebase/scitt_emulator/policy_engine.py
 fi
