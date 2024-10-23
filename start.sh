@@ -19,5 +19,7 @@ scitt-emulator server \
   --tree-alg CCF \
   --port "${PORT}" \
   --workspace workspace/ \
-  --middleware scitt_emulator.federation_activitypub_bovine:SCITTFederationActivityPubBovine \
-  --middleware-config-path federation_workspace/config.json
+  --middleware \
+    scitt_emulator.federation_activitypub_bovine:SCITTFederationActivityPubBovine \
+  --middleware-config-path \
+    federation_workspace/config.json
