@@ -1,3 +1,4 @@
+import os
 import abc
 import sys
 import pdb
@@ -22,7 +23,10 @@ class AGIEventType(enum.Enum):
     NEW_AGENT_CREATED = enum.auto()
     EXISTING_AGENT_RETRIEVED = enum.auto()
     NEW_THREAD_CREATED = enum.auto()
+    NEW_THREAD_RUN_CREATED = enum.auto()
     NEW_THREAD_MESSAGE = enum.auto()
+    THREAD_RUN_COMPLETE = enum.auto()
+    THREAD_RUN_EVENT_WITH_UNKNOWN_STATUS = enum.auto()
 
 
 @dataclasses.dataclass
@@ -41,7 +45,29 @@ class AGIEventNewAgent:
 class AGIEventNewThreadCreated:
     agent_id: str
     thread_id: str
+
+
+@dataclasses.dataclass
+class AGIEventNewThreadRunCreated:
+    agent_id: str
+    thread_id: str
     run_id: str
+
+
+@dataclasses.dataclass
+class AGIEventThreadRunComplete:
+    agent_id: str
+    thread_id: str
+    run_id: str
+    status: str
+
+
+@dataclasses.dataclass
+class AGIEventThreadRunEventWithUnknwonStatus(AGIEventNewThreadCreated):
+    agent_id: str
+    thread_id: str
+    run_id: str
+    status: str
 
 
 @dataclasses.dataclass
@@ -231,9 +257,12 @@ async def agent_openai(
     kvstore: KVStore,
     action_stream: AGIActionStream,
     openai_api_key: str,
+    *,
+    openai_base_url: Optional[str] = None,
 ):
     client = openai.AsyncOpenAI(
         api_key=openai_api_key,
+        base_url=openai_base_url,
     )
 
     agents = {}
@@ -247,6 +276,8 @@ async def agent_openai(
         ),
     }
     async for (work_name, work_ctx), result in concurrently(work):
+        print(f"openai_agent.{work_name}", pprint.pformat(result))
+        # TODO There should be no await's here, always add to work
         if work_name == "action_stream":
             work[tg.create_task(work_ctx.__anext__())] = (work_name, work_ctx)
             if result.action_type == AGIActionType.NEW_AGENT:
@@ -303,38 +334,97 @@ async def agent_openai(
                     event_data=AGIEventNewThreadCreated(
                         agent_id=result.action_data.agent_id,
                         thread_id=run.thread_id,
+                    ),
+                )
+                yield AGIEvent(
+                    event_type=AGIEventType.NEW_THREAD_RUN_CREATED,
+                    event_data=AGIEventNewThreadRunCreated(
+                        agent_id=result.action_data.agent_id,
+                        thread_id=run.thread_id,
                         run_id=run.id,
                     ),
                 )
+                work[
+                    tg.create_task(
+                        client.beta.threads.runs.retrieve(
+                            thread_id=run.thread_id, run_id=run.id
+                        )
+                    )
+                ] = (
+                    f"thread.runs.{run.id}",
+                    run,
+                )
             elif result.action_type == AGIActionType.ADD_MESSAGE:
+                continue
                 _message = await client.beta.threads.messages.create(
                     thread_id=result.action_data.thread_id,
                     role="user",
                     content=result.action_data.add_message,
                 )
-                thread_messages = client.beta.threads.messages.create(
-                    thread_id=result.action_data.thread_id,
+        elif work_name.startswith("thread.runs."):
+            if result.status == "completed":
+                yield AGIEvent(
+                    event_type=AGIEventType.THREAD_RUN_COMPLETE,
+                    event_data=AGIEventThreadRunComplete(
+                        agent_id=result.assistant_id,
+                        thread_id=result.thread_id,
+                        run_id=result.id,
+                        status=result.status,
+                    ),
+                )
+                # TODO Send this similar to seed back to a feedback queue to
+                # process as an action for get thread messages
+                thread_messages = client.beta.threads.messages.list(
+                    thread_id=result.thread_id,
                 )
                 thread_messages_iter = thread_messages.__aiter__()
                 work[tg.create_task(thread_messages_iter.__anext__())] = (
-                    f"thread.messages.{result.action_data.thread_id}",
-                    thread_iter,
+                    f"thread.messages.{result.thread_id}",
+                    thread_messages_iter,
+                )
+            if result.status == "in_progress":
+                work[
+                    tg.create_task(
+                        client.beta.threads.runs.retrieve(
+                            thread_id=result.thread_id, run_id=result.id
+                        )
+                    )
+                ] = (
+                    f"thread.runs.{run.id}",
+                    result,
+                )
+            else:
+                yield AGIEvent(
+                    event_type=AGIEventType.THREAD_RUN_EVENT_WITH_UNKNOWN_STATUS,
+                    event_data=AGIEventThreadRunEventWithUnknwonStatus(
+                        agent_id=result.assistant_id,
+                        thread_id=result.thread_id,
+                        run_id=result.id,
+                        status=result.status,
+                    ),
                 )
         elif work_name.startswith("thread.messages."):
             _, _, thread_id = work_name.split(".", maxsplit=3)
             work[tg.create_task(work_ctx.__anext__())] = (work_name, work_ctx)
-            yield AGIEvent(
-                event_type=AGIEventType.NEW_THREAD_MESSAGE,
-                event_data=AGIEventNewThreadMessage(
-                    agent_id=result.assistant_id,
-                    thread_id=result.thread_id,
-                    message_content=result.content,
-                ),
-            )
+            for content in result.content:
+                if content.type == "text":
+                    yield AGIEvent(
+                        event_type=AGIEventType.NEW_THREAD_MESSAGE,
+                        event_data=AGIEventNewThreadMessage(
+                            agent_id=result.assistant_id,
+                            thread_id=result.thread_id,
+                            role=result.role,
+                            content_type=content.type,
+                            message_content=content.text.value,
+                        ),
+                    )
 
 
 def pdb_action_stream_get_user_input():
-    user_input = input("# \r")
+    try:
+        user_input = input("# \r")
+    except KeyboardInterrupt:
+        sys.exit(0)
     if "(" in user_input:
         user_input = eval(user_input)
     return user_input
@@ -358,6 +448,7 @@ class AsyncioLockedCurrentlyDict(collections.UserDict):
         super().__setitem__(name, value)
         self.currently = value
         self.currently_exists.set()
+        print("currently", value)
 
     async def __aenter__(self):
         await self.lock.__aenter__()
@@ -374,13 +465,20 @@ async def pdb_action_stream(tg, agents, threads, seed):
         user_input = await asyncio.to_thread(pdb_action_stream_get_user_input)
         if pathlib.Path(user_input).is_file():
             async with agents:
-                user_input = AGIAction(
-                    action_type=AGIActionType.INGEST_FILE,
-                    action_data=AGIActionIngestFile(
-                        agent_id=agents.currently,
-                        file_path=user_input,
-                    ),
+                active_agent_currently_undefined = (
+                    agents.currently == CURRENTLY_UNDEFINED
                 )
+            if active_agent_currently_undefined:
+                await tg.create_task(agents.currently_exists.wait())
+            async with agents:
+                current_agent = agents.currently
+            yield AGIAction(
+                action_type=AGIActionType.INGEST_FILE,
+                action_data=AGIActionIngestFile(
+                    agent_id=agents.currently,
+                    file_path=user_input,
+                ),
+            )
         elif not isinstance(user_input, AGIAction):
             async with agents:
                 active_agent_currently_undefined = (
@@ -422,6 +520,7 @@ async def main(
     kvstore: KVStore = None,
     action_stream: AGIActionStream = None,
     openai_api_key: str = None,
+    openai_base_url: Optional[str] = None,
 ):
     if not kvstore:
         kvstore = KVStoreKeyring({"service_name": kvstore_service_name})
@@ -451,7 +550,12 @@ async def main(
 
         if openai_api_key:
             agent_events = agent_openai(
-                tg, agi_name, kvstore, action_stream, openai_api_key
+                tg,
+                agi_name,
+                kvstore,
+                action_stream,
+                openai_api_key,
+                openai_base_url=openai_base_url,
             )
         else:
             raise Exception(
@@ -473,6 +577,7 @@ async def main(
                     agents[
                         agent_event.event_data.agent_name
                     ] = agent_event.event_data.agent_id
+                """
                 async with threads:
                     active_thread_currently_undefined = (
                         threads.currently == CURRENTLY_UNDEFINED
@@ -486,6 +591,7 @@ async def main(
                     threads[active_thread_saved] = AGIEventNewThreadCreated(
                         **json.loads(active_thread_saved)
                     )
+                """
             elif agent_event.event_type == AGIEventType.NEW_THREAD_CREATED:
                 await kvstore.set(
                     f"agents.{agent_event.event_data.agent_id}.current_thread.id",
@@ -502,4 +608,15 @@ if __name__ == "__main__":
 
     args = parser.parse_args(sys.argv[1:])
 
-    asyncio.run(main(**vars(args)))
+    import httptest
+
+    with httptest.Server(
+        httptest.CachingProxyHandler.to(
+            str(openai.AsyncClient(api_key="Alice").base_url),
+            state_dir=str(
+                pathlib.Path(__file__).parent.joinpath(".cache", "openai")
+            ),
+        )
+    ) as cache_server:
+        # args.openai_base_url = cache_server.url()
+        asyncio.run(main(**vars(args)))
