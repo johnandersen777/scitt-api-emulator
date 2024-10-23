@@ -20,6 +20,8 @@ scitt-emulator server \
   --port "${PORT}" \
   --workspace workspace/ \
   --middleware \
+    sphinx_docs_middleware:SphinxDocsMiddleware \
     scitt_emulator.federation_activitypub_bovine:SCITTFederationActivityPubBovine \
   --middleware-config-path \
+    - \
     federation_workspace/config.json
