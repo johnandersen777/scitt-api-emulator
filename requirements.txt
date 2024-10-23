@@ -1,1 +1,1 @@
-scitt-emulator @ https://github.com/scitt-community/scitt-api-emulator/archive/72a75511d7840d4062741185ec6879b585ee8c07.tar.gz
+scitt-emulator @ https://github.com/scitt-community/scitt-api-emulator/archive/88b38edb5a829b17ce2578d40de12fab777a9eb5.tar.gz
