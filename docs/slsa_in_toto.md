@@ -8,7 +8,7 @@ Upstream for S2C2F sections: https://github.com/ossf/s2c2f/blob/98803e0a558e6d8c
 
 # S2C2F: Appendix: Mapping Secure Supply Chain Consumption Framework Requirements to Other Specifications
 
-There are many other security frameworks, guides, and controls. This section maps the S2C2F Framework requirements to other relevant specifications including NIST SP 800-161, NIST SP 800-218, CIS Software Supply Chain Security Guide, OWASP Software Component Verification Standard, SLSA, and the CNCF Software Supply Chain Best Practices.
+Goal: Create YAML file allowing users to map webhook event data to creation of data notarized by SCITT, statments and receipts created. Use YAML as basis for overall automatable format for alignment to S2C2F.
 
 | **Requirement ID** | **Requirement Title** | **References** |
 | --- | --- | --- |
@@ -19,7 +19,7 @@ There are many other security frameworks, guides, and controls. This section map
 | SCA-1 | Scan OSS for known vulnerabilities | **SP800218** : RV.1.1 <br /> **SP800161** : SA-10, SR-3, SR-4 <br /> **CIS SSC SG** : 1.5.5, 3.2.2 <br /> **OWASP SCVS:** 5.4 <br /> **CNCF SSC:** Verify third party artefacts and open source libraries, Scan software for vulnerabilities, Run software composition analysis on ingested software |
 | SCA-2 | Scan OSS for licenses | **CIS SSC SG** : 1.5.6, 3.2.3 <br /> **OWASP SCVS:** 5.12 <br /> **CNCF SSC:** Scan software for license implications |
 | SCA-3 | Scan OSS to determine if its end-of-life | **SP800218** : PW.4.1 <br /> **SP800161** : SA-4, SA-5, SA-8(3), SA-10(6), SR-3, SR-4 <br /> **OWASP SCVS:** 5.8 |
-| SCA-4 | Scan OSS for malware | |
+| SCA-4 | Scan OSS for malware | clamav workflow or job |
 | SCA-5 | Perform proactive security review of OSS | **SP800218** : PW.4.4 <br /> **SP800161** : SA-4, SA-8, SA-9, SA-9(3), SR-3, SR-4, SR-4(3), SR-4(4) <br /> **OWASP SCVS:** 5.2, 5.3, |
 | INV-1 | Maintain an automated inventory of all OSS used in development | **OWASP SCVS:** 1.1, 1.3, 1.8, 5.11 <br /> **CNCF SSC:** Track dependencies between open source components |
 | INV-2 | Have an OSS Incident Response Plan | **SP800218** : RV.2.2 <br /> **SP800161** : SA-5, SA-8, SA-10, SA-11, SA-15(7) |
@@ -46,6 +46,7 @@ Targets are new commits, branches, tags, and their CI/CD (status check) results
   - https://github.com/in-toto/attestation/blob/99d851228fe284c66b2cde353a6693c5eff69db1/spec/v1/statement.md
   - https://github.com/in-toto/attestation/blob/99d851228fe284c66b2cde353a6693c5eff69db1/spec/predicates/test-result.md
   - https://github.com/in-toto/attestation/blob/99d851228fe284c66b2cde353a6693c5eff69db1/spec/predicates/cyclonedx.md
+  - https://github.com/aquasecurity/trivy/blob/950e431f0f9759f053dc2fbe10e1869696c957f3/docs/docs/supply-chain/vex.md#openvex
 - https://docs.github.com/en/rest/repos/contents?apiVersion=2022-11-28#download-a-repository-archive-tar
 
 ```json
