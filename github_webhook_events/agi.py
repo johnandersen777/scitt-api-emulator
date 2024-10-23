@@ -1,3 +1,22 @@
+r"""
+# Alice - aka the Open Architecture
+
+
+
+# Contributing
+
+## Setup: Python
+
+```bash
+python -m pip install -U pip setuptools wheel snoop openai keyring libtmux
+```
+
+## Testing
+
+```bash
+nodemon -e py,toml,yaml,yml,json --exec 'clear; python -u agi.py; test 1'
+```
+"""
 import os
 import abc
 import sys
@@ -444,12 +463,11 @@ async def agent_openai(
                         assistant = await client.beta.assistants.create(
                             name=result.action_data.agent_name,
                             instructions=result.action_data.agent_instructions,
-                            # model="gpt-4-1106-preview",
                             model=await kvstore.get(
                                 f"openai.assistants.{agi_name}.model",
-                                "gpt-3.5-turbo-1106",
+                                "gpt-4o",
                             ),
-                            tools=[{"type": "retrieval"}],
+                            tools=[{"type": "file_search"}],
                             # file_ids=[file.id],
                         )
                         yield AGIEvent(
@@ -720,6 +738,10 @@ async def pdb_action_stream(tg, user_name, agents, threads):
         )
 
 
+class AGIThinClientNeedsModelAccessError(Exception):
+    pass
+
+
 async def main(
     user_name: str,
     agi_name: str,
@@ -783,7 +805,7 @@ async def main(
                 openai_base_url=openai_base_url,
             )
         else:
-            raise Exception(
+            raise AGIThinClientNeedsModelAccessError(
                 "No API keys or implementations of assistants given"
             )
 
