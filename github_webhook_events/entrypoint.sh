@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-set -xeuo pipefail
+set -xo pipefail
+
+if [[ "x${FAIL_ON_ERROR}" != "x0" ]]; then
+  set -e
+fi
+
+set -u
 
 export EDITOR=vim
 

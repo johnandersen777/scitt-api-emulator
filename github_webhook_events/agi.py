@@ -3944,24 +3944,7 @@ async def main(
 
                             pane.send_keys(f'', enter=True)
                             pane.send_keys("source ${CALLER_PATH}/util.sh", enter=True)
-                            pane.send_keys(
-                                textwrap.dedent(
-                                    '''
-                                    if [ ! -f "${CALLER_PATH}/policy_engine.logs.txt" ]; then
-                                        NO_CELERY=1 python -u ${CALLER_PATH}/policy_engine.py api --bind 127.0.0.1:0 --workers 1 1>"${CALLER_PATH}/policy_engine.logs.txt" 2>&1 &
-                                        POLICY_ENGINE_PID=$!
-
-                                        until find_listening_ports "$POLICY_ENGINE_PID"; do sleep 0.01; done
-
-                                        export POLICY_ENGINE_PORT=$(find_listening_ports "$POLICY_ENGINE_PID")
-
-                                        echo "${POLICY_ENGINE_PORT}" > "${CALLER_PATH}/policy_engine_port.txt"
-                                    fi
-                                    '''.lstrip(),
-                                ),
-                                enter=True,
-                            )
-                            pane.send_keys('if [ ! -f "${CALLER_PATH}/policy_engine.logs.txt" ]; then NO_CELERY=1 python -u ${CALLER_PATH}/policy_engine.py api --workers 1 1>"${CALLER_PATH}/policy_engine.logs.txt" 2>&1 & fi', enter=True)
+                            # pane.send_keys('if [ ! -f "${CALLER_PATH}/policy_engine.logs.txt" ]; then NO_CELERY=1 python -u ${CALLER_PATH}/policy_engine.py api --workers 1 1>"${CALLER_PATH}/policy_engine.logs.txt" 2>&1 & fi', enter=True)
                             pane.send_keys(f'', enter=True)
 
                             # pane.send_keys(f'cat >>EOF', enter=True)
@@ -4261,10 +4244,12 @@ async def tmux_test(*args, socket_path=None, **kwargs):
         session.set_environment(tempdir_lookup_env_var, tempdir_env_var)
         session.set_environment(tempdir_env_var, tempdir)
 
-        alice_input_path = pathlib.Path(tempdir, "input.txt")
-        alice_input_last_line_path = pathlib.Path(tempdir, "input-last-line.txt")
-        session.set_environment(f"{agi_name}_INPUT", str(alice_input_path))
-        session.set_environment(f"{agi_name}_INPUT_LAST_LINE", str(alice_input_last_line_path))
+        # window = session.new_window(attach=False, window_name="test")
+        # pane = window.split(attach=False)
+        # pane.send_keys('echo hey', enter=False)
+
+        session.set_environment(f"{agi_name}_INPUT", str(pathlib.Path(tempdir, "input.txt")))
+        session.set_environment(f"{agi_name}_INPUT_LAST_LINE", str(pathlib.Path(tempdir, "input-last-line.txt")))
 
         pane.send_keys(
             r'curl -vfLo "${CALLER_PATH}/policy_engine.py" https://github.com/pdxjohnny/scitt-api-emulator/raw/policy_engine_cwt_rebase/scitt_emulator/policy_engine.py',
@@ -4302,14 +4287,96 @@ async def tmux_test(*args, socket_path=None, **kwargs):
         )
         pane.send_keys('chmod 700 "${CALLER_PATH}/entrypoint.sh"', enter=True)
 
+        workflow = PolicyEngineWorkflow(
+            on={},
+            name=None,
+            jobs={
+                "ssh": PolicyEngineWorkflowJob(
+                    runs_on="target",
+                    steps=[
+                        PolicyEngineWorkflowJobStep(
+                            id=None,
+                            if_condition=True,
+                            name=None,
+                            uses=None,
+                            shell=None,
+                            with_inputs=None,
+                            env=None,
+                            run=textwrap.dedent(
+                                """
+                                echo HI
+                                """
+                            ),
+                        )
+                    ]
+                )
+            },
+        )
+        proposed_workflow_contents = yaml.dump(
+            json.loads(workflow.model_dump_json()),
+            default_flow_style=False,
+            sort_keys=True,
+        )
+        request_contents = yaml.dump(
+            json.loads(
+                PolicyEngineRequest(
+                    inputs={},
+                    context={},
+                    stack={},
+                    workflow=workflow,
+                ).model_dump_json(),
+            )
+        )
+
+        pane.send_keys(
+            "cat > \"${CALLER_PATH}/proposed-workflow.yml\" <<\'WRITE_OUT_SH_EOF\'"
+            + "\n"
+            + proposed_workflow_contents
+            + "\nWRITE_OUT_SH_EOF",
+            enter=True,
+        )
+        pane.send_keys(
+            "cat > \"${CALLER_PATH}/request.yml\" <<\'WRITE_OUT_SH_EOF\'"
+            + "\n"
+            + request_contents
+            + "\nWRITE_OUT_SH_EOF",
+            enter=True,
+        )
+        pane.send_keys('set +e', enter=True)
+        pane.send_keys('export FAIL_ON_ERROR=0', enter=True)
         pane.send_keys('source "${CALLER_PATH}/entrypoint.sh"', enter=True)
+        pane.send_keys('unset FAIL_ON_ERROR', enter=True)
+        pane.send_keys('source "${CALLER_PATH}/util.sh"', enter=True)
+        pane.send_keys(
+            textwrap.dedent(
+                '''
+                if [ ! -f "${CALLER_PATH}/policy_engine.logs.txt" ]; then
+                    policy_engine_deps
+
+                    NO_CELERY=1 python -u ${CALLER_PATH}/policy_engine.py api --bind 127.0.0.1:0 --workers 1 1>"${CALLER_PATH}/policy_engine.logs.txt" 2>&1 &
+                    POLICY_ENGINE_PID=$!
+
+                    until find_listening_ports "$POLICY_ENGINE_PID"; do sleep 0.01; done
+
+                    export POLICY_ENGINE_PORT=$(find_listening_ports "$POLICY_ENGINE_PID")
+
+                    echo "${POLICY_ENGINE_PORT}" > "${CALLER_PATH}/policy_engine_port.txt"
+                fi
+                '''.lstrip(),
+            ),
+            enter=True,
+        )
+        pane.send_keys("set +e", enter=True)
+        pane.send_keys("submit_policy_engine_request", enter=True)
 
         # pane.send_keys('set -x', enter=True)
         # pane.send_keys(f'export {tempdir_env_var}="{tempdir}"', enter=True)
         # pane.send_keys('docker run --rm -ti -e CALLER_PATH="/host" -v "${' + tempdir_env_var + '}:/host:z" --entrypoint /host/entrypoint.sh registry.fedoraproject.org/fedora' +'; rm -rfv ${' + tempdir_env_var + '}', enter=True)
 
         # TODO Error handling, immediate trampoline python socket nest
-        while ps1.strip() != pane.capture_pane()[-1].strip():
+        lines = pane.capture_pane()
+        while lines and ps1.strip() != "".join(lines[-1:]).strip():
+            lines = pane.capture_pane()
             time.sleep(0.1)
 
         await main(*args, pane=pane, **kwargs)
@@ -4335,7 +4402,8 @@ def run_tmux_attach(socket_path):
         "--socket-path",
         socket_path,
     ]
-    subprocess.run(cmd)
+    with open(os.devnull, "w") as devnull:
+        subprocess.Popen(cmd, stdin=devnull, stdout=sys.stdout, stderr=sys.stderr).wait()
 
 
 @app.get("/connect/{socket_stem}")
