@@ -35,7 +35,7 @@ RUN set -x \
 # TODO Caching
 # RUN bash -xec "$(grep 'pip install' /host/agi.py | head -n 1)"
 RUN set -x \
-  && python -m pip install -U pip setuptools wheel snoop openai keyring libtmux
+  && python -m pip install -U pip setuptools wheel snoop openai keyring keyrings-alt libtmux
 
 COPY server_motd /host/
 COPY openai_assistant_instructions.md /host/

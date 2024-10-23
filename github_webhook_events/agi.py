@@ -3713,9 +3713,18 @@ async def pdb_action_stream(tg, user_name, agi_name, agents, threads, pane: Opti
     line_number_path = pathlib.Path(line_number_path)
 
     # Try to read the last stored line number from the file
-    stored_ln = line_number_path.read_text().strip()
-    if stored_ln.isdigit():
-        line_number = int(stored_ln)
+    window = pane.session.new_window(attach=False)
+    pane = window.split(attach=False)
+    pane.send_keys(f'echo last_line=$(cat "${agi_name}_INPUT_LAST_LINE")', enter=True)
+    line = ""
+    while not line.startswith("last_line="):
+        for line in pane.capture_pane():
+            stored_ln = line.split("last_line=")[-1]
+            if stored_ln.isdigit():
+                line_number = int(stored_ln)
+                break
+            break
+        await asyncio.sleep(sleep_time)
 
     while True:
         # TODO Add file_path.stat() optimization on read
@@ -3893,11 +3902,6 @@ async def main(
             ),
         }
         async for (work_name, work_ctx), result in concurrently(work):
-            error = None
-            # with contextlib.suppress(Exception):
-            error = result.exception()
-            if error is not None:
-                raise error
             if result is STOP_ASYNC_ITERATION:
                 continue
             if work_name == "agent.events":
@@ -3928,7 +3932,7 @@ async def main(
                         )
                     with snoop():
                         # Ready for child shell
-                        if os.fork() == 0:
+                        if os.environ.get("NO_SHELL", "1") != "1" and os.fork() == 0:
                             cmd = [
                                 "bash",
                             ]
@@ -3939,6 +3943,7 @@ async def main(
                             # threading.Thread(target=a_shell_for_a_ghost_send_keys,
                             #                  args=[pane, motd_string, 1]).run()
                             tempdir = pathlib.Path(pane.window.session.show_environment()[f"{agi_name}_INPUT"]).parent
+
                             pane.send_keys(f'', enter=True)
                             pane.send_keys('if [ "x${CALLER_PATH}" = "x" ]; then export CALLER_PATH="' + str(tempdir) + '"; fi', enter=True)
 
@@ -4244,10 +4249,6 @@ async def tmux_test(*args, socket_path=None, **kwargs):
         session.set_environment(tempdir_lookup_env_var, tempdir_env_var)
         session.set_environment(tempdir_env_var, tempdir)
 
-        # window = session.new_window(attach=False, window_name="test")
-        # pane = window.split(attach=False)
-        # pane.send_keys('echo hey', enter=False)
-
         session.set_environment(f"{agi_name}_INPUT", str(pathlib.Path(tempdir, "input.txt")))
         session.set_environment(f"{agi_name}_INPUT_LAST_LINE", str(pathlib.Path(tempdir, "input-last-line.txt")))
 
@@ -4379,6 +4380,8 @@ async def tmux_test(*args, socket_path=None, **kwargs):
             lines = pane.capture_pane()
             time.sleep(0.1)
 
+        pane.send_keys(f'set +x', enter=True)
+
         await main(*args, pane=pane, **kwargs)
     finally:
         with contextlib.suppress(Exception):
@@ -4393,7 +4396,6 @@ from fastapi import FastAPI, BackgroundTasks
 
 app = FastAPI()
 
-@snoop
 def run_tmux_attach(socket_path):
     cmd = [
         sys.executable,
@@ -4403,7 +4405,13 @@ def run_tmux_attach(socket_path):
         socket_path,
     ]
     with open(os.devnull, "w") as devnull:
-        subprocess.Popen(cmd, stdin=devnull, stdout=sys.stdout, stderr=sys.stderr).wait()
+        subprocess.Popen(
+            cmd,
+            stdin=devnull,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            env={"NO_SHELL": "1", **os.environ},
+        ).wait()
 
 
 @app.get("/connect/{socket_stem}")
