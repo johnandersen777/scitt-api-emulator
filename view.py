@@ -42,10 +42,15 @@ for statement_path in storage_path.glob("*.cose"):
     entry_id = statement_path.stem
     statement = statement_path.read_bytes()
     msg = Sign1Message.decode(statement, tag=True)
-    statement_object = json.loads(msg.payload.decode())
+    try:
+        statement_object = json.loads(msg.payload.decode())
+    except:
+        try:
+            statement_object = {"payload": msg.payload.decode()}
+        except:
+            statement_object = {"payload": str(repr(msg.payload))}
     receipt_path = statement_path.with_suffix(".receipt.cbor")
     receipt = receipt_path.read_bytes()
-    json.loads(msg.payload.decode())
     entries.append(
         SCITTSignalsFederationCreatedEntry(
             tree_alg=tree_alg,
