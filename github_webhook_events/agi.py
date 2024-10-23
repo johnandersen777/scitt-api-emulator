@@ -3728,7 +3728,9 @@ async def DEBUG_TEMP_message_handler(user_name,
                 yaml.dump(
                     json.loads(
                         response.workflow.model_dump_json()
-                   )
+                   ),
+                   default_flow_style=False,
+                   sort_keys=True,
                 )
             )
             request_path = pathlib.Path(tempdir, "request.yml")
@@ -3745,9 +3747,28 @@ async def DEBUG_TEMP_message_handler(user_name,
                 )
             )
             pane.send_keys(r"""TASK_ID=$(curl -X POST -H "Content-Type: application/json" -d @<(cat /host/request.yml | python -c 'import json, yaml, sys; print(json.dumps(yaml.safe_load(sys.stdin.read()), indent=4, sort_keys=True))') http://localhost:8080/request/create  | jq -r .detail.id)""", enter=True)
-            pane.send_keys(f"curl http://localhost:8080/request/status/$TASK_ID | jq", enter=True)
-            print(f"{user_name}: ", end="")
-            print(f"{proposed_workflow_path.resolve()}:\n{proposed_workflow_path.read_text()}")
+            pane.send_keys(
+                textwrap.dedent(
+                    r"""
+                    submit_policy_engine_request() {
+                        tail -F /host/policy_engine.logs.txt &
+                        TAIL_PID=$!
+                        STATUS=$(curl http://localhost:8080/request/status/$TASK_ID | jq -r .status)
+                        while [ "x${STATUS}" != "xcomplete" ]; do
+                            STATsUS=$(curl http://localhost:8080/request/status/$TASK_ID | jq -r .status)
+                        done
+                        kill "${TAIL_PID}"
+                        STATUS=$(curl http://localhost:8080/request/status/$TASK_ID | python -m json.tool > /host/last-request-status.json)
+                        cat /host/last-request-status.json | jq
+                        export STATUS=$(cat /host/last-request-status.json | jq -r .status)
+                    }
+                    submit_policy_engine_request
+                    """
+                ),
+                enter=True,
+            )
+            print()
+            print(f"{proposed_workflow_path.resolve()}:\n{proposed_workflow_path.read_text().rstrip()}")
             print(f"{user_name}: ", end="")
             # pane.send_keys("EOF")
         else:
@@ -4116,17 +4137,19 @@ async def tmux_test(*args, **kwargs):
             session.set_environment(tempdir_env_var, tempdir)
             pathlib.Path(tempdir, "entrypoint.sh").write_text(
                 textwrap.dedent(
-                    f"""
+                    r"""
                     #!/usr/bin/env bash
                     set -xeuo pipefail
 
                     trap bash EXIT
 
-                    export PS1='{ps1}'
-
                     dnf install -y git vim openssh jq python python-pip unzip nodejs
 
-                    # curl -fsSL https://deno.land/install.sh | sh
+                    curl -fsSL https://deno.land/install.sh | sh
+                    export DENO_INSTALL="${HOME}/.deno"
+                    export PATH="$DENO_INSTALL/bin:$PATH"
+                    hash -r
+                    cp -v $(which deno) /usr/bin/deno || true
 
                     export EDITOR=vim
 
@@ -4135,9 +4158,15 @@ async def tmux_test(*args, **kwargs):
 
                     curl -sfLO https://github.com/pdxjohnny/scitt-api-emulator/raw/policy_engine_cwt_rebase/scitt_emulator/policy_engine.py
 
-                    (NO_CELERY=1 python -u policy_engine.py api --workers 1 2>&1 | tee policy_engine.logs.txt) &
+                    NO_CELERY=1 python -u policy_engine.py api --workers 1 1>/host/policy_engine.logs.txt 2>&1 &
 
                     # clear
+                    """
+                ).lstrip()
+                + textwrap.dedent(
+                    f"""
+
+                    export PS1='{ps1}'
 
                     bash
                     """
@@ -4150,8 +4179,8 @@ async def tmux_test(*args, **kwargs):
                 pathlib.Path(tempdir, "host_path.txt").write_text(tempdir_env_var)
                 pane.send_keys('set -x', enter=True)
                 pane.send_keys(f'export {tempdir_env_var}="{tempdir}"', enter=True)
-                # pane.send_keys('docker run --rm -ti -v "${' + tempdir_env_var + '}:/host:z" --entrypoint /host/entrypoint.sh registry.fedoraproject.org/fedora' +'; rm -rfv ${' + tempdir_env_var + '}', enter=True)
-                pane.send_keys('docker run --rm -ti -v "${' + tempdir_env_var + '}:/host:z" --entrypoint /host/entrypoint.sh alice' +'; rm -rfv ${' + tempdir_env_var + '}', enter=True)
+                pane.send_keys('docker run --rm -ti -v "${' + tempdir_env_var + '}:/host:z" --entrypoint /host/entrypoint.sh registry.fedoraproject.org/fedora' +'; rm -rfv ${' + tempdir_env_var + '}', enter=True)
+                # pane.send_keys('docker run --rm -ti -v "${' + tempdir_env_var + '}:/host:z" --entrypoint /host/entrypoint.sh alice' +'; rm -rfv ${' + tempdir_env_var + '}', enter=True)
 
                 # TODO Error handling, immediate trampoline python socket nest
                 while ps1.strip() != pane.capture_pane()[-1].strip():
@@ -4167,7 +4196,9 @@ async def tmux_test(*args, **kwargs):
         finally:
             with contextlib.suppress(Exception):
                 if pane is not None:
-                    pane.kill()
+                    # TODO Some switch to change behavior at runtime
+                    pass
+                    # pane.kill()
 
         # pane = libtmux.Pane.from_pane_id(pane_id=pane.cmd('split-window', '-P', '-F#{pane_id}').stdout[0], server=pane.server)
 
