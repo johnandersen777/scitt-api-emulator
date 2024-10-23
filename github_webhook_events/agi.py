@@ -909,7 +909,7 @@ async def main(
                         == "rate_limit_exceeded"
                     ):
                         # TODO Change this to sleep within create_task
-                        await asyncio.sleep(20)
+                        await asyncio.sleep(5)
                         await user_input_action_stream_queue.put(
                             AGIAction(
                                 action_type=AGIActionType.RUN_THREAD,
@@ -1037,15 +1037,5 @@ if __name__ == "__main__":
 
     args = parser.parse_args(sys.argv[1:])
 
-    import httptest
-
-    with httptest.Server(
-        httptest.CachingProxyHandler.to(
-            str(openai.AsyncClient(api_key="Alice").base_url),
-            state_dir=str(
-                pathlib.Path(__file__).parent.joinpath(".cache", "openai")
-            ),
-        )
-    ) as cache_server:
-        # args.openai_base_url = cache_server.url()
-        asyncio.run(main(**vars(args)))
+    # TODO LiteLLM
+    asyncio.run(main(**vars(args)))
