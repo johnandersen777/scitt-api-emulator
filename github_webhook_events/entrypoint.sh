@@ -16,12 +16,18 @@ if [[ -f /etc/os-release ]]; then
   . /etc/os-release
 fi
 
+SUDO=""
+if [[ -f /usr/bin/sudo ]]; then
+  SUDO="sudo -E"
+fi
+
+
 if [[ ! -f /usr/bin/socat ]] || [[ ! -f /usr/bin/git ]] || [[ ! -f /usr/bin/tmux ]] || [[ ! -f /usr/bin/ssh ]] || [[ ! -f /usr/bin/python ]] || [[ ! -f /usr/bin/unzip ]] || [[ ! -f /usr/bin/curl ]] || [[ ! -f /usr/bin/node ]]; then
   if [[ "x${ID}" = "xfedora" ]]; then
-    sudo -E dnf install -y tmux git vim curl openssh socat jq python python-pip unzip nodejs
+    $SUDO dnf install -y tmux git vim curl openssh socat jq python python-pip unzip nodejs
   fi
   if [[ "x${ID}" = "xdebian" ]] || [[ "x${ID_LIKE}" = "xdebian" ]]; then
-    sudo -E apt-get update && sudo -E apt-get install -y tmux git vim curl openssh-client socat jq python3 python3-pip unzip nodejs
+    $SUDO apt-get update && $SUDO apt-get install -y tmux git vim curl openssh-client socat jq python3 python3-pip unzip nodejs
   fi
 fi
 
@@ -33,7 +39,7 @@ if [ ! -f /usr/bin/deno ]; then
     && curl -sfLO 'https://github.com/denoland/deno/releases/download/v1.46.3/deno-x86_64-unknown-linux-gnu.zip' \
     && unzip deno*.zip \
     && sha384sum -c <<< "6b73273cd0eb0272d293edf10ab7accc0504943076ce5c6d354d44be3a7f47d21ae234b2f77bdfe94355984406645dab  deno" \
-    && sudo mv -v deno /usr/bin/deno
+    && $SUDO mv -v deno /usr/bin/deno
   )
 fi
 
