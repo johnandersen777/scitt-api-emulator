@@ -6,8 +6,8 @@ export GITHUB_USER=myusername
 echo Or extract from GitHub CLI https://cli.github.com
 export GITHUB_USER=$(gh auth status | grep 'Logged in to github.com account ' | awk '{print $7}')
 echo On first run you have to run it twice
-ssh -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PasswordAuthentication=no -L /tmp/${GITHUB_USER}.sock:$(echo $TMUX | sed -e 's/,.*//g') ${GITHUB_USER}@localhost
-ssh -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PasswordAuthentication=no -L /tmp/${GITHUB_USER}.sock:$(echo $TMUX | sed -e 's/,.*//g') ${GITHUB_USER}@localhost
+ssh -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PasswordAuthentication=no -R /tmp/${GITHUB_USER}.sock:$(echo $TMUX | sed -e 's/,.*//g') ${GITHUB_USER}@localhost
+ssh -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PasswordAuthentication=no -R /tmp/${GITHUB_USER}.sock:$(echo $TMUX | sed -e 's/,.*//g') ${GITHUB_USER}@localhost
 ```
 
 # Contributing
@@ -4201,7 +4201,6 @@ async def tmux_test(*args, socket_path=None, **kwargs):
             sessions = server.attached_sessions
             if not sessions:
                 sessions = server.sessions
-            snoop.pp(server)
             session = sessions[0]
             tempdir_lookup_env_var = f'TEMPDIR_ENV_VAR_TMUX_WINDOW_{session.active_window.id.replace("@", "")}'
             # Make a new tempdir in case old one doesn't exist

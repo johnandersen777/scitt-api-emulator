@@ -27,7 +27,10 @@ RUN set -x \
   && echo 'AuthorizedKeysCommand /usr/bin/curl -sfL https://github.com/%u.keys' | tee -a /etc/ssh/sshd_config \
   && echo 'AuthorizedKeysCommandUser nobody' | tee -a /etc/ssh/sshd_config \
   && echo 'AuthorizedPrincipalsCommand /usr/bin/curl -sfL https://github.com/%u.keys' | tee -a /etc/ssh/sshd_config \
-  && echo 'AuthorizedPrincipalsCommandUser nobody' | tee -a /etc/ssh/sshd_config
+  && echo 'AuthorizedPrincipalsCommandUser nobody' | tee -a /etc/ssh/sshd_config \
+  && echo 'AllowTcpForwarding yes' | tee -a /etc/ssh/sshd_config \
+  && echo 'StreamLocalBindUnlink yes' | tee -a /etc/ssh/sshd_config \
+  && echo 'PermitOpen any' | tee -a /etc/ssh/sshd_config
 
 COPY server_motd /host/
 
