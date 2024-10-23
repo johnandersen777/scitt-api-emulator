@@ -10,6 +10,7 @@ import asyncio
 import getpass
 import pathlib
 import argparse
+import traceback
 import contextlib
 import collections
 import dataclasses
@@ -17,6 +18,14 @@ from typing import Any, List, Optional, NewType, AsyncIterator
 
 import openai
 import keyring
+
+
+def async_lambda(func):
+    async def async_func():
+        nonlocal func
+        return func()
+
+    return async_func
 
 
 class AGIEventType(enum.Enum):
@@ -27,6 +36,7 @@ class AGIEventType(enum.Enum):
     NEW_THREAD_CREATED = enum.auto()
     NEW_THREAD_RUN_CREATED = enum.auto()
     NEW_THREAD_MESSAGE = enum.auto()
+    THREAD_MESSAGE_ADDED = enum.auto()
     THREAD_RUN_COMPLETE = enum.auto()
     THREAD_RUN_IN_PROGRESS = enum.auto()
     THREAD_RUN_EVENT_WITH_UNKNOWN_STATUS = enum.auto()
@@ -91,6 +101,15 @@ class AGIEventNewThreadMessage:
     message_content: str
 
 
+@dataclasses.dataclass
+class AGIEventThreadMessageAdded:
+    agent_id: str
+    thread_id: str
+    message_id: str
+    message_role: str
+    message_content: str
+
+
 class AGIActionType(enum.Enum):
     NEW_AGENT = enum.auto()
     INGEST_FILE = enum.auto()
@@ -125,8 +144,10 @@ class AGIActionNewThread:
 
 @dataclasses.dataclass
 class AGIActionAddMessage:
+    agent_id: str
     thread_id: str
-    add_message: str
+    message_role: str
+    message_content: str
 
 
 @dataclasses.dataclass
@@ -458,11 +479,26 @@ async def agent_openai(
                     run,
                 )
             elif result.action_type == AGIActionType.ADD_MESSAGE:
-                _message = await client.beta.threads.messages.create(
-                    thread_id=result.action_data.thread_id,
-                    role=result.action_data.role,
-                    content=result.action_data.add_message,
-                )
+                try:
+                    message = await client.beta.threads.messages.create(
+                        thread_id=result.action_data.thread_id,
+                        role=result.action_data.message_role,
+                        content=result.action_data.message_content,
+                    )
+                    a = AGIEvent(
+                        event_type=AGIEventType.THREAD_MESSAGE_ADDED,
+                        event_data=AGIEventThreadMessageAdded(
+                            agent_id=result.action_data.agent_id,
+                            thread_id=result.action_data.thread_id,
+                            message_id=message.id,
+                            message_role=result.action_data.message_role,
+                            message_content=result.action_data.message_content,
+                        ),
+                    )
+                except:
+                    traceback.print_exc()
+                    raise
+                yield a
         elif work_name.startswith("thread.runs."):
             if result.status == "completed":
                 yield AGIEvent(
@@ -560,8 +596,6 @@ def pdb_action_stream_get_user_input(user_name: str):
             user_input = sys_stdin_iter.__next__().rstrip()
     except (KeyboardInterrupt, StopIteration):
         return STDIN_CLOSED
-    if "(" in user_input:
-        user_input = eval(user_input)
     return user_input
 
 
@@ -593,68 +627,11 @@ class AsyncioLockedCurrentlyDict(collections.UserDict):
         await self.lock.__aexit__(exc_type, exc_value, traceback)
 
 
-async def pdb_action_stream(tg, user_name, agents, threads, action_stream_seed):
-    for action in action_stream_seed:
-        yield action
+async def pdb_action_stream(tg, user_name, agents, threads):
     while True:
-        user_input = await asyncio.to_thread(
+        yield await asyncio.to_thread(
             pdb_action_stream_get_user_input, user_name
         )
-        if pathlib.Path(user_input).is_file():
-            async with agents:
-                active_agent_currently_undefined = (
-                    agents.currently == CURRENTLY_UNDEFINED
-                )
-            if active_agent_currently_undefined:
-                await tg.create_task(agents.currently_exists.wait())
-            async with agents:
-                current_agent = agents.currently
-            yield AGIAction(
-                action_type=AGIActionType.INGEST_FILE,
-                action_data=AGIActionIngestFile(
-                    agent_id=agents.currently.state_data.agent_id,
-                    file_path=user_input,
-                ),
-            )
-        elif not isinstance(user_input, AGIAction):
-            async with agents:
-                active_agent_currently_undefined = (
-                    agents.currently == CURRENTLY_UNDEFINED
-                )
-            if active_agent_currently_undefined:
-                await tg.create_task(agents.currently_exists.wait())
-            async with threads:
-                active_thread_currently_undefined = (
-                    threads.currently == CURRENTLY_UNDEFINED
-                )
-            if active_thread_currently_undefined:
-                async with agents:
-                    current_agent = agents.currently
-                yield AGIAction(
-                    action_type=AGIActionType.NEW_THREAD,
-                    action_data=AGIActionNewThread(
-                        agent_id=current_agent.state_data.agent_id,
-                    ),
-                )
-                await tg.create_task(threads.currently_exists.wait())
-            async with threads:
-                current_thread = threads.currently
-            yield AGIAction(
-                action_type=AGIActionType.ADD_MESSAGE,
-                action_data=AGIActionAddMessage(
-                    thread_id=current_thread.state_data.thread_id,
-                    add_message=user_input,
-                ),
-            )
-            yield AGIAction(
-                action_type=AGIActionType.RUN_THREAD,
-                action_data=AGIActionRunThread(
-                    agent_id=current_thread.state_data.agent_id,
-                    thread_id=current_thread.state_data.thread_id,
-                ),
-            )
-        else:
-            yield user_input
 
 
 async def main(
@@ -689,9 +666,26 @@ async def main(
 
     async with kvstore, asyncio.TaskGroup() as tg:
         if not action_stream:
-            action_stream = pdb_action_stream(
-                tg, user_name, agents, threads, action_stream_seed
+            unvalidated_user_input_action_stream = pdb_action_stream(
+                tg,
+                user_name,
+                agents,
+                threads,
             )
+
+        user_input_action_stream_queue = asyncio.Queue()
+
+        async def user_input_action_stream_queue_iterator(queue):
+            # TODO Stop condition/asyncio.Event
+            while True:
+                yield await queue.get()
+
+        action_stream = user_input_action_stream_queue_iterator(
+            user_input_action_stream_queue,
+        )
+
+        for action in action_stream_seed:
+            await user_input_action_stream_queue.put(action)
 
         if openai_api_key:
             agent_events = agent_openai(
@@ -707,86 +701,210 @@ async def main(
                 "No API keys or implementations of assistants given"
             )
 
-        async for agent_event in agent_events:
-            pprint.pprint(agent_event)
-            print(f"{user_name}: ", end="\r")
-            if agent_event.event_type in (
-                AGIEventType.NEW_AGENT_CREATED,
-                AGIEventType.EXISTING_AGENT_RETRIEVED,
-            ):
-                await kvstore.set(
-                    f"agents.{agent_event.event_data.agent_name}.id",
-                    agent_event.event_data.agent_id,
+        waiting = []
+
+        unvalidated_user_input_action_stream_iter = (
+            unvalidated_user_input_action_stream.__aiter__()
+        )
+        agent_events_iter = agent_events.__aiter__()
+        work = {
+            tg.create_task(
+                ignore_stopasynciteration(
+                    unvalidated_user_input_action_stream_iter.__anext__()
                 )
-                async with agents:
-                    agents[agent_event.event_data.agent_id] = AGIState(
-                        state_type=AGIStateType.AGENT,
-                        state_data=AGIStateAgent(
-                            agent_name=agent_event.event_data.agent_name,
-                            agent_id=agent_event.event_data.agent_id,
-                        ),
-                    )
-            elif agent_event.event_type == AGIEventType.NEW_THREAD_CREATED:
-                async with threads:
-                    threads[agent_event.event_data.thread_id] = AGIState(
-                        state_type=AGIStateType.THREAD,
-                        state_data=AGIStateThread(
-                            agent_id=agent_event.event_data.agent_id,
-                            thread_id=agent_event.event_data.thread_id,
-                        ),
-                    )
-                async with agents:
-                    agents[
-                        agent_event.event_data.agent_id
-                    ].state_data.thread_ids.append(
-                        agent_event.event_data.thread_id
-                    )
-                    print(agents[agent_event.event_data.agent_id])
-            elif agent_event.event_type == AGIEventType.NEW_THREAD_RUN_CREATED:
-                async with threads:
-                    thread_state = threads[agent_event.event_data.thread_id]
-                    thread_state.most_recent_run_id = (
-                        agent_event.event_data.run_id
-                    )
-                    thread_state.most_recent_run_status = (
-                        agent_event.event_data.run_status
-                    )
-                    print(thread_state)
-            elif agent_event.event_type == AGIEventType.THREAD_RUN_IN_PROGRESS:
-                async with threads:
-                    threads[
-                        agent_event.event_data.thread_id
-                    ].state_data.most_recent_run_status = (
-                        agent_event.event_data.run_status
-                    )
-            elif agent_event.event_type == AGIEventType.THREAD_RUN_COMPLETE:
-                async with threads:
-                    threads[
-                        agent_event.event_data.thread_id
-                    ].state_data.most_recent_run_status = (
-                        agent_event.event_data.run_status
-                    )
-                    print(threads[agent_event.event_data.thread_id])
-                async with agents:
-                    print(agents[agent_event.event_data.agent_id])
-                    agents[
-                        agent_event.event_data.agent_id
-                    ].state_data.thread_ids.remove(
-                        agent_event.event_data.thread_id
-                    )
-                    print(agents[agent_event.event_data.agent_id])
-            elif agent_event.event_type == AGIEventType.NEW_THREAD_MESSAGE:
-                async with agents:
-                    agent_state = agents[agent_event.event_data.agent_id]
-                # TODO https://rich.readthedocs.io/en/stable/markdown.html
-                if agent_event.event_data.message_content_type == "text":
-                    print(
-                        f"{agent_state.state_data.agent_name}: {agent_event.event_data.message_content}"
-                    )
-                    print(f"{user_name}: ", end="\r")
-            elif result.action_type == AGIActionType.ADD_MESSAGE:
-                # If no thread, re-enqueue
+            ): (
+                "user.unvalidated.input_action_stream",
+                unvalidated_user_input_action_stream_iter,
+            ),
+            tg.create_task(
+                ignore_stopasynciteration(agent_events_iter.__anext__())
+            ): (
+                "agent.events",
+                agent_events_iter,
+            ),
+        }
+        async for (work_name, work_ctx), result in concurrently(work):
+            if result is STOP_ASYNC_ITERATION:
                 continue
+            if work_name == "agent.events":
+                work[
+                    tg.create_task(
+                        ignore_stopasynciteration(work_ctx.__anext__())
+                    )
+                ] = (work_name, work_ctx)
+                agent_event = result
+                pprint.pprint(agent_event)
+                print(f"{user_name}: ", end="\r")
+                if agent_event.event_type in (
+                    AGIEventType.NEW_AGENT_CREATED,
+                    AGIEventType.EXISTING_AGENT_RETRIEVED,
+                ):
+                    await kvstore.set(
+                        f"agents.{agent_event.event_data.agent_name}.id",
+                        agent_event.event_data.agent_id,
+                    )
+                    async with agents:
+                        agents[agent_event.event_data.agent_id] = AGIState(
+                            state_type=AGIStateType.AGENT,
+                            state_data=AGIStateAgent(
+                                agent_name=agent_event.event_data.agent_name,
+                                agent_id=agent_event.event_data.agent_id,
+                            ),
+                        )
+                elif agent_event.event_type == AGIEventType.NEW_THREAD_CREATED:
+                    async with threads:
+                        threads[agent_event.event_data.thread_id] = AGIState(
+                            state_type=AGIStateType.THREAD,
+                            state_data=AGIStateThread(
+                                agent_id=agent_event.event_data.agent_id,
+                                thread_id=agent_event.event_data.thread_id,
+                            ),
+                        )
+                    async with agents:
+                        agents[
+                            agent_event.event_data.agent_id
+                        ].state_data.thread_ids.append(
+                            agent_event.event_data.thread_id
+                        )
+                        print(agents[agent_event.event_data.agent_id])
+                elif (
+                    agent_event.event_type
+                    == AGIEventType.NEW_THREAD_RUN_CREATED
+                ):
+                    async with threads:
+                        thread_state = threads[agent_event.event_data.thread_id]
+                        thread_state.most_recent_run_id = (
+                            agent_event.event_data.run_id
+                        )
+                        thread_state.most_recent_run_status = (
+                            agent_event.event_data.run_status
+                        )
+                        print(thread_state)
+                elif (
+                    agent_event.event_type
+                    == AGIEventType.THREAD_RUN_IN_PROGRESS
+                ):
+                    async with threads:
+                        threads[
+                            agent_event.event_data.thread_id
+                        ].state_data.most_recent_run_status = (
+                            agent_event.event_data.run_status
+                        )
+                elif agent_event.event_type == AGIEventType.THREAD_RUN_COMPLETE:
+                    async with threads:
+                        threads[
+                            agent_event.event_data.thread_id
+                        ].state_data.most_recent_run_status = (
+                            agent_event.event_data.run_status
+                        )
+                        print(threads[agent_event.event_data.thread_id])
+                    async with agents:
+                        print(agents[agent_event.event_data.agent_id])
+                        agents[
+                            agent_event.event_data.agent_id
+                        ].state_data.thread_ids.remove(
+                            agent_event.event_data.thread_id
+                        )
+                        print(agents[agent_event.event_data.agent_id])
+                elif agent_event.event_type == AGIEventType.NEW_THREAD_MESSAGE:
+                    async with agents:
+                        agent_state = agents[agent_event.event_data.agent_id]
+                    # TODO https://rich.readthedocs.io/en/stable/markdown.html
+                    if agent_event.event_data.message_content_type == "text":
+                        print(
+                            f"{agent_state.state_data.agent_name}: {agent_event.event_data.message_content}"
+                        )
+                        print(f"{user_name}: ", end="\r")
+                # Run any actions which have been waiting for an event
+                for action_waiting_for_event, make_action in waiting:
+                    if action_waiting_for_event == agent_event.event_type:
+                        await user_input_action_stream_queue.put(
+                            await make_action()
+                        )
+            elif work_name == "user.unvalidated.input_action_stream":
+                work[
+                    tg.create_task(
+                        ignore_stopasynciteration(work_ctx.__anext__())
+                    )
+                ] = (work_name, work_ctx)
+                user_input = result
+                waiting.append(
+                    (
+                        AGIEventType.THREAD_MESSAGE_ADDED,
+                        async_lambda(
+                            lambda: AGIAction(
+                                action_type=AGIActionType.RUN_THREAD,
+                                action_data=AGIActionRunThread(
+                                    agent_id=threads.currently.state_data.agent_id,
+                                    thread_id=threads.currently.state_data.thread_id,
+                                ),
+                            )
+                        ),
+                    ),
+                )
+                # TODO Handle case where agent does not yet exist
+                """
+                async with agents:
+                    active_agent_currently_undefined = (
+                        agents.currently == CURRENTLY_UNDEFINED
+                    )
+                if active_agent_currently_undefined:
+                    await tg.create_task(agents.currently_exists.wait())
+                """
+                if pathlib.Path(user_input).is_file():
+                    await user_input_action_stream_queue.put(
+                        AGIAction(
+                            action_type=AGIActionType.INGEST_FILE,
+                            action_data=AGIActionIngestFile(
+                                agent_id=agents.currently.state_data.agent_id,
+                                file_path=user_input,
+                            ),
+                        ),
+                    )
+                async with threads:
+                    active_thread_currently_undefined = (
+                        threads.currently == CURRENTLY_UNDEFINED
+                    )
+                if active_thread_currently_undefined:
+                    async with agents:
+                        current_agent = agents.currently
+                    if not isinstance(user_input, AGIAction):
+                        waiting.append(
+                            (
+                                AGIEventType.NEW_THREAD_CREATED,
+                                async_lambda(
+                                    lambda: AGIAction(
+                                        action_type=AGIActionType.ADD_MESSAGE,
+                                        action_data=AGIActionAddMessage(
+                                            agent_id=agents.currently.state_data.agent_id,
+                                            thread_id=threads.currently.state_data.thread_id,
+                                            message_role="user",
+                                            message_content=user_input,
+                                        ),
+                                    )
+                                ),
+                            ),
+                        )
+                    await user_input_action_stream_queue.put(
+                        AGIAction(
+                            action_type=AGIActionType.NEW_THREAD,
+                            action_data=AGIActionNewThread(
+                                agent_id=current_agent.state_data.agent_id,
+                            ),
+                        ),
+                    )
+                else:
+                    await user_input_action_stream_queue.put(
+                        AGIAction(
+                            action_type=AGIActionType.ADD_MESSAGE,
+                            action_data=AGIActionAddMessage(
+                                agent_id=agents.currently.state_data.agent_id,
+                                thread_id=threads.currently.state_data.thread_id,
+                                message_role="user",
+                                message_content=user_input,
+                            ),
+                        ),
+                    )
 
 
 if __name__ == "__main__":
