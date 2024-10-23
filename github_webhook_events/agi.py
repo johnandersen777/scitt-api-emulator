@@ -236,7 +236,9 @@ async def assistant_openai(
             elif result.action_type == AGIActionType.ASK_QUESTION:
                 stream = await client.chat.completions.create(
                     prompt="Say this is a test",
-                    messages=[{"role": "user", "content": "Say this is a test"}],
+                    messages=[
+                        {"role": "user", "content": "Say this is a test"}
+                    ],
                     stream=True,
                 )
                 stream_id = str(uuid.uuid4())
@@ -260,7 +262,7 @@ async def assistant_openai(
 
 async def pdb_action_stream(tg):
     while True:
-        yield await asyncio.to_thread(lambda: pdb.runeval(input("(agi: alice) $ ")))
+        yield await asyncio.to_thread(lambda: eval(input("(agi: alice) $ ")))
 
 
 async def main(
@@ -283,10 +285,12 @@ async def main(
                 tg, agi_name, kvstore, action_stream, openai_api_key
             )
         else:
-            raise Exception("No API keys or implementations of assistants given")
+            raise Exception(
+                "No API keys or implementations of assistants given"
+            )
 
         async for assistant_event in assistant:
-            print("assistant_event:", pprint.pformat(assistant_event))
+            pprint.pprint(assistant_event)
 
 
 if __name__ == "__main__":
