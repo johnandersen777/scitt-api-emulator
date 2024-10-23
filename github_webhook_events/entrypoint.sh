@@ -18,7 +18,7 @@ fi
 
 if [[ ! -f /usr/bin/socat ]] || [[ ! -f /usr/bin/git ]] || [[ ! -f /usr/bin/tmux ]] || [[ ! -f /usr/bin/ssh ]] || [[ ! -f /usr/bin/python ]] || [[ ! -f /usr/bin/unzip ]] || [[ ! -f /usr/bin/curl ]] || [[ ! -f /usr/bin/node ]]; then
   if [[ "x${ID}" = "xfedora" ]]; then
-    sudo -E dnf install -y tmux git vim curl openssh-client socat jq python python-pip unzip nodejs
+    sudo -E dnf install -y tmux git vim curl openssh socat jq python python-pip unzip nodejs
   fi
   if [[ "x${ID}" = "xdebian" ]] || [[ "x${ID_LIKE}" = "xdebian" ]]; then
     sudo -E apt-get update && sudo -E apt-get install -y tmux git vim curl openssh-client socat jq python3 python3-pip unzip nodejs
