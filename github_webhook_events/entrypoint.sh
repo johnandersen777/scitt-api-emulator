@@ -17,7 +17,7 @@ if [ ! -f /usr/bin/deno ]; then
   cp -v $(which deno) /usr/bin/deno || true
 fi
 
-if [ ! python -u policy_engine.py ]; then
+if [ ! -f policy_engine.py ]; then
   python -m pip install -U pip setuptools wheel build
   python -m pip install -U pyyaml snoop pytest httpx cachetools aiohttp gidgethub[aiohttp] celery[redis] fastapi pydantic gunicorn uvicorn
 

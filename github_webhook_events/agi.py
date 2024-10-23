@@ -3942,8 +3942,6 @@ async def main(
 
                         # pane.send_keys(f'cat >>EOF', enter=True)
                         # a_shell_for_a_ghost_send_keys(pane, motd_string, erase_after=1)
-                        a_shell_for_a_ghost_send_keys(pane, motd_string)
-                        pane.send_keys(f'', enter=True)
                         # pane.send_keys(f'EOF', enter=True)
                         # pane.send_keys(f'', enter=True)
 
@@ -3951,9 +3949,11 @@ async def main(
                         pane.send_keys(f'export {agi_name.upper()}_INPUT_LAST_LINE="' + '${CALLER_PATH}/input-last-line.txt"', enter=True)
 
                         # pane.send_keys(f'cat >>EOF', enter=True)
-                        success_string = f"echo \"{agi_name}: We\'re in... awaiting instructions at $" + agi_name.upper() + "_INPUT\""
+                        success_string = f"echo \"{agi_name} $ We\'re in... awaiting instructions at $" + agi_name.upper() + "_INPUT\""
                         # a_shell_for_a_ghost_send_keys(pane, success_string, erase_after=4.2)
                         a_shell_for_a_ghost_send_keys(pane, success_string)
+                        pane.send_keys(f'', enter=True)
+                        a_shell_for_a_ghost_send_keys(pane, f"echo {agi_name} $ {motd_string}")
                         pane.send_keys(f'', enter=True)
                         # pane.send_keys(f'EOF', enter=True)
                         # pane.send_keys(f'', enter=True)
@@ -4148,7 +4148,7 @@ async def main(
 
 import libtmux
 
-motd_string = "echo ... Battle Control, Online ..."
+motd_string = "... Battle Control, Online ..."
 
 # @snoop
 def a_shell_for_a_ghost_send_keys(pane, send_string, erase_after=None):
@@ -4177,28 +4177,12 @@ async def tmux_test(*args, **kwargs):
     if not user_tempdir_path.is_dir():
         user_tempdir_path.mkdir(parents=True)
 
-    alice_input_path = pathlib.Path(
-        "~", ".local", "agi", agi_name, "input.txt",
-    ).expanduser()
-    alice_input_path.parent.mkdir(parents=True, exist_ok=True)
-    alice_input_path.write_text("")
-
-    alice_input_last_line_path = alice_input_path.parent.joinpath(
-        "input-last-line.txt",
-    )
-    alice_input_last_line_path.write_text("")
-
-    os.environ[f"{agi_name}_INPUT"] = str(alice_input_path.resolve())
-    os.environ[f"{agi_name}_INPUT_LAST_LINE"] = str(alice_input_last_line_path.resolve())
-
     with tempfile.TemporaryDirectory(dir=user_tempdir_path, delete=False) as tempdir:
         pane = None
         possible_tempdir = tempdir
         try:
             server = libtmux.Server()
             session = server.attached_sessions[0]
-            session.set_environment(f"{agi_name}_INPUT", str(alice_input_path.resolve()))
-            session.set_environment(f"{agi_name}_INPUT_LAST_LINE", str(alice_input_last_line_path.resolve()))
             tempdir_lookup_env_var = f'TEMPDIR_ENV_VAR_TMUX_WINDOW_{session.active_window.id.replace("@", "")}'
             # Make a new tempdir in case old one doesn't exist
             tempdir_env_var = f"TEMPDIR_ENV_VAR_{uuid.uuid4()}".replace("-", "_")
@@ -4215,6 +4199,21 @@ async def tmux_test(*args, **kwargs):
                     break
             session.set_environment(tempdir_lookup_env_var, tempdir_env_var)
             session.set_environment(tempdir_env_var, tempdir)
+
+            alice_input_path = pathlib.Path(tempdir, "input.txt").resolve()
+            alice_input_path.parent.mkdir(parents=True, exist_ok=True)
+            alice_input_path.write_text("")
+
+            alice_input_last_line_path = alice_input_path.parent.joinpath(
+                "input-last-line.txt",
+            )
+            alice_input_last_line_path.write_text("")
+
+            os.environ[f"{agi_name}_INPUT"] = str(alice_input_path.resolve())
+            os.environ[f"{agi_name}_INPUT_LAST_LINE"] = str(alice_input_last_line_path.resolve())
+            session.set_environment(f"{agi_name}_INPUT", os.environ[f"{agi_name}_INPUT"])
+            session.set_environment(f"{agi_name}_INPUT_LAST_LINE", os.environ[f"{agi_name}_INPUT_LAST_LINE"])
+
             pathlib.Path(tempdir, "entrypoint.sh").write_text(
                 textwrap.dedent(
                     f"""
@@ -4223,7 +4222,9 @@ async def tmux_test(*args, **kwargs):
 
                     trap bash EXIT
 
-                    export CALLER_PATH='{tempdir}'
+                    if [ "x$CALLER_PATH" = "x" ]; then
+                        export CALLER_PATH="{tempdir}"
+                    fi
                     export PS1='{ps1}'
 
                     """
@@ -4247,14 +4248,13 @@ async def tmux_test(*args, **kwargs):
                 pathlib.Path(tempdir, "host_path.txt").write_text(tempdir_env_var)
                 pane.send_keys('set -x', enter=True)
                 pane.send_keys(f'export {tempdir_env_var}="{tempdir}"', enter=True)
-                pane.send_keys('docker run --rm -ti -v "${' + tempdir_env_var + '}:/host:z" --entrypoint /host/entrypoint.sh registry.fedoraproject.org/fedora' +'; rm -rfv ${' + tempdir_env_var + '}', enter=True)
+                pane.send_keys('docker run --rm -ti -e CALLER_PATH="/host" -v "${' + tempdir_env_var + '}:/host:z" --entrypoint /host/entrypoint.sh registry.fedoraproject.org/fedora' +'; rm -rfv ${' + tempdir_env_var + '}', enter=True)
 
                 # TODO Error handling, immediate trampoline python socket nest
                 while ps1.strip() != pane.capture_pane()[-1].strip():
                     time.sleep(0.1)
 
                 pane.send_keys(f'', enter=True)
-                pane.send_keys(f'export CALLER_PATH="/host"', enter=True)
 
             await main(*args, pane=pane, **kwargs)
         finally:
