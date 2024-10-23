@@ -1,2 +1,4 @@
 scitt-emulator[oidc,federation-activitypub-bovine] @ https://github.com/scitt-community/scitt-api-emulator/archive/88b38edb5a829b17ce2578d40de12fab777a9eb5.tar.gz
 bovine-pubsub @ https://codeberg.org/pdxjohnny/bovine/archive/health_ping_heroku_h12.tar.gz#subdirectory=bovine_pubsub
+myst-parser>=1.0.0
+sphinx
