@@ -27,10 +27,9 @@ scitt-emulator server \
   --workspace workspace/ \
   --middleware \
     scitt_software_supply_chain_middleware.sphinx_docs_middleware:SphinxDocsMiddleware \
+    scitt_software_supply_chain_middleware.github_webhook_notary:GitHubWebhookNotaryMiddleware \
     scitt_emulator.federation_activitypub_bovine:SCITTFederationActivityPubBovine \
   --middleware-config-path \
+    <(echo "{\"docs\": \"${PWD}/docs\"}") \
     - \
     federation_workspace/config.json
-
-#     scitt_software_supply_chain_middleware.github_webhook_notary:GitHubWebhookNotaryMiddleware \
-#     - \

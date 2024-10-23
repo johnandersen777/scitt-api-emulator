@@ -1,7 +1,9 @@
 # Copyright (c) SCITT Authors.
 # Licensed under the MIT License.
 import sys
+import json
 import pathlib
+import tempfile
 import subprocess
 
 from quart import send_from_directory
@@ -15,12 +17,16 @@ class SphinxDocsMiddleware:
         if config_path and config_path.exists():
             self.config = json.loads(config_path.read_text())
 
-        self.build_docs()
         self.add_routes(app)
 
-    def build_docs(self):
-        parent_path = pathlib.Path(__file__).parent
-        self.built_singlehtml_dir_path = parent_path.joinpath("built_singlehtml_dir")
+        @app.while_serving
+        async def create_tempdir_for_docs():
+            with tempfile.TemporaryDirectory() as tempdir:
+                self.build_docs(tempdir)
+                yield
+
+    def build_docs(self, tempdir):
+        self.built_singlehtml_dir_path = pathlib.Path(tempdir, "built_singlehtml_dir")
         subprocess.call(
             [
                 sys.executable,
@@ -28,7 +34,7 @@ class SphinxDocsMiddleware:
                 "sphinx",
                 "-b",
                 "singlehtml",
-                parent_path.joinpath("docs"),
+                self.config["docs"],
                 self.built_singlehtml_dir_path,
             ]
         )
