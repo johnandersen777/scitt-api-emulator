@@ -466,19 +466,19 @@ async def agent_openai(
                     file_ids = agents[result.action_data.agent_id].file_ids + [
                         file.id
                     ]
-                    """
                     non_existant_file_ids = []
                     for file_id in file_ids:
                         try:
                             file = await openai.resources.beta.assistants.AsyncFiles(
                                 client
-                            ).retrieve(file_id, assistant_id=result.action_data.agent_id)
+                            ).retrieve(
+                                file_id,
+                                assistant_id=result.action_data.agent_id,
+                            )
                         except openai.NotFoundError:
                             non_existant_file_ids.append(file_id)
                     for file_id in non_existant_file_ids:
                         file_ids.remove(file_id)
-                    print("non_existant_file_ids", non_existant_file_ids, file_ids)
-                    """
                     assistant = (
                         await openai.resources.beta.assistants.AsyncAssistants(
                             client
@@ -585,7 +585,7 @@ async def agent_openai(
                     work[
                         tg.create_task(
                             asyncio_sleep_for_then_coro(
-                                10,
+                                5,
                                 client.beta.threads.runs.retrieve(
                                     thread_id=result.thread_id, run_id=result.id
                                 ),
