@@ -2970,6 +2970,10 @@ from pydantic import BaseModel, ConfigDict
 logger = logging.getLogger(__name__)
 
 
+class RetreiveInformation(BaseModel, extra="forbid"):
+    target: str
+    source: str
+
 
 class AGIOpenAIAssistantResponseStep(BaseModel, extra="forbid"):
     explanation: str
@@ -3001,7 +3005,7 @@ class AGIEventType(enum.Enum):
     INTERNAL_RE_QUEUE = enum.auto()
     NEW_AGENT_CREATED = enum.auto()
     EXISTING_AGENT_RETRIEVED = enum.auto()
-    NEW_FILE_ADDED = enum.auto()
+    FILE_INGESTED = enum.auto()
     NEW_THREAD_CREATED = enum.auto()
     NEW_THREAD_RUN_CREATED = enum.auto()
     NEW_THREAD_MESSAGE = enum.auto()
@@ -3159,6 +3163,9 @@ class AGIState:
 class AGIStateAgent:
     agent_name: str
     agent_id: str
+    file_ids: List[str] = dataclasses.field(
+        default_factory=lambda: [],
+    )
     thread_ids: List[str] = dataclasses.field(
         default_factory=lambda: [],
     )
@@ -3426,6 +3433,28 @@ async def agent_openai(
                                 ),
                             )
                     if not assistant:
+                        retrieval_assistant = await client.beta.assistants.create(
+                            name=f"{result.action_data.agent_name}-retrieval",
+                            # TODO Dynamically take prompt
+                            instructions=r"Use file search tools to retrieve information and generate useful responses from it as requested.",
+                            model=await kvstore.get(
+                                f"openai.assistants.{agi_name}.model",
+                                "gpt-4o-2024-08-06",
+                            ),
+                            tools=[{"type": "file_search"}],
+                        )
+                        vector_store = await client.beta.vector_stores.create(name=retrieval_assistant.id)
+                        retrieval_assistant = (
+                            await openai.resources.beta.assistants.AsyncAssistants(
+                                client
+                            ).update(
+                                assistant_id=retrieval_assistant.id,
+                                tool_resources={"file_search": {"vector_store_ids": [vector_store.id]}},
+                                metadata={
+                                    "vector_store_id": vector_store.id,
+                                },
+                            )
+                        )
                         assistant = await client.beta.assistants.create(
                             name=result.action_data.agent_name,
                             instructions=result.action_data.agent_instructions,
@@ -3433,6 +3462,11 @@ async def agent_openai(
                                 f"openai.assistants.{agi_name}.model",
                                 "gpt-4o-2024-08-06",
                             ),
+                            metadata={
+                                "retrieval_assistant_id": retrieval_assistant.id,
+                            },
+                            tools=[openai.pydantic_function_tool(RetreiveInformation)],
+                            # tools=[{"type": "file_search"}],
                             response_format={
                                 "type": "json_schema",
                                 "json_schema": {
@@ -3456,45 +3490,40 @@ async def agent_openai(
                     agents[assistant.id] = assistant
                 elif result.action_type == AGIActionType.INGEST_FILE:
                     # TODO Validate with server threat model
-                    continue
-                    # TODO aiofile and tg.create_task
-                    with open(result.action_data.file_path, "rb") as fileobj:
-                        file = await client.files.create(
-                            file=fileobj,
-                            purpose="assistants",
-                        )
-                    file_ids = agents[result.action_data.agent_id].file_ids + [
-                        file.id
-                    ]
-                    """
-                    non_existant_file_ids = []
-                    for file_id in file_ids:
-                        try:
-                            file = await openai.resources.beta.assistants.AsyncFiles(
-                                client
-                            ).retrieve(
-                                file_id,
-                                assistant_id=result.action_data.agent_id,
-                            )
-                        except openai.NotFoundError:
-                            non_existant_file_ids.append(file_id)
-                    for file_id in non_existant_file_ids:
-                        file_ids.remove(file_id)
-                    """
+                    if "NO_SHELL" in os.environ:
+                        continue
                     assistant = (
                         await openai.resources.beta.assistants.AsyncAssistants(
                             client
-                        ).update(
+                        ).retrieve(
                             assistant_id=result.action_data.agent_id,
-                            file_ids=file_ids,
                         )
                     )
-                    logger.debug(
-                        "AsyncAssistants.update(): %s",
-                        pprint.pformat(assistant),
+                    retrieval_assistant = (
+                        await openai.resources.beta.assistants.AsyncAssistants(
+                            client
+                        ).retrieve(
+                            assistant_id=assistant.metadata["retrieval_assistant_id"],
+                        )
                     )
+                    snoop.pp(retrieval_assistant)
+                    vector_store = (
+                        await openai.resources.beta.vector_stores.AsyncVectorStores(
+                            client
+                        ).retrieve(
+                            vector_store_id=retrieval_assistant.metadata["vector_store_id"],
+                        )
+                    )
+                    with open(result.action_data.file_path, "rb") as fileobj:
+                        file_paths = [result.action_data.file_path]
+                        file_streams = [fileobj]
+                        file_batch = await client.beta.vector_stores.file_batches.upload(
+                            vector_store_id=vector_store.id,
+                            files=file_streams,
+                        )
+                        logger.debug("Uploaded %r: %r", result.action_data.file_path, pprint.pformat(file_batch))
                     yield AGIEvent(
-                        event_type=AGIEventType.NEW_FILE_ADDED,
+                        event_type=AGIEventType.FILE_INGESTED,
                         event_data=AGIEventNewFileAdded(
                             agent_id=result.action_data.agent_id,
                             file_id=file.id,
@@ -4200,6 +4229,13 @@ async def main(
                         agent_state = agents[agent_event.event_data.agent_id]
                     await DEBUG_TEMP_message_handler(user_name, agent_state, agent_event,
                                                      pane=pane)
+                elif agent_event.event_type in (
+                    AGIEventType.FILE_INGESTED,
+                ):
+                    async with agents:
+                        agents[agent_event.event_data.agent_id].state_data.file_ids.append(
+                            agent_event.event_data.file_id,
+                        )
             elif work_name == "user.unvalidated.input_action_stream":
                 work[
                     tg.create_task(
@@ -4207,22 +4243,6 @@ async def main(
                     )
                 ] = (work_name, work_ctx)
                 user_input = result
-                if (
-                    isinstance(user_input, str)
-                    and user_input.startswith("AGI_ACTION_TYPE.INGEST_FILE:")
-                ):
-                    file_path = user_input.startswith("AGI_ACTION_TYPE.INGEST_FILE:")
-                    if pathlib.Path(user_input).is_file():
-                        await user_input_action_stream_queue.put(
-                            AGIAction(
-                                action_type=AGIActionType.INGEST_FILE,
-                                action_data=AGIActionIngestFile(
-                                    agent_id=agents.currently.state_data.agent_id,
-                                    file_path=file_path,
-                                ),
-                            ),
-                        )
-                        continue
                 waiting.append(
                     (
                         # OR is array, AND is dict values
@@ -4240,22 +4260,43 @@ async def main(
                         )
                     )
                 )
-                waiting.append(
-                    (
-                        AGIEventType.NEW_THREAD_CREATED,
-                        async_lambda(
-                            lambda: AGIAction(
-                                action_type=AGIActionType.ADD_MESSAGE,
-                                action_data=AGIActionAddMessage(
-                                    agent_id=agents.currently.state_data.agent_id,
-                                    thread_id=threads.currently.state_data.thread_id,
-                                    message_role="user",
-                                    message_content=user_input,
-                                ),
+                if (
+                    isinstance(user_input, str)
+                    and user_input.startswith("AGI_ACTION_TYPE.INGEST_FILE:")
+                ):
+                    file_path = user_input.split("AGI_ACTION_TYPE.INGEST_FILE:", maxsplit=1)[1]
+                    if pathlib.Path(file_path).is_file():
+                        waiting.append(
+                            (
+                                AGIEventType.NEW_THREAD_CREATED,
+                                async_lambda(
+                                    lambda: AGIAction(
+                                        action_type=AGIActionType.INGEST_FILE,
+                                        action_data=AGIActionIngestFile(
+                                            agent_id=agents.currently.state_data.agent_id,
+                                            file_path=file_path,
+                                        ),
+                                    )
+                                )
+                            )
+                        )
+                else:
+                    waiting.append(
+                        (
+                            AGIEventType.NEW_THREAD_CREATED,
+                            async_lambda(
+                                lambda: AGIAction(
+                                    action_type=AGIActionType.ADD_MESSAGE,
+                                    action_data=AGIActionAddMessage(
+                                        agent_id=agents.currently.state_data.agent_id,
+                                        thread_id=threads.currently.state_data.thread_id,
+                                        message_role="user",
+                                        message_content=user_input,
+                                    ),
+                                )
                             )
                         )
                     )
-                )
                 waiting.append(
                     (
                         AGIEventType.THREAD_MESSAGE_ADDED,
