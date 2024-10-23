@@ -3065,6 +3065,7 @@ class AGIEventThreadRunFailed:
     thread_id: str
     run_id: str
     run_status: str
+    last_error: Any
 
 
 @dataclasses.dataclass
@@ -3072,7 +3073,7 @@ class AGIEventThreadRunEventWithUnknwonStatus(AGIEventNewThreadCreated):
     agent_id: str
     thread_id: str
     run_id: str
-    status: str
+    run_status: str
 
 
 @dataclasses.dataclass
@@ -3376,8 +3377,6 @@ async def agent_openai(
     *,
     openai_base_url: Optional[str] = None,
 ):
-    # snoop().__enter__()
-
     client = openai.AsyncOpenAI(
         api_key=openai_api_key,
         base_url=openai_base_url,
@@ -3451,6 +3450,8 @@ async def agent_openai(
                         )
                     agents[assistant.id] = assistant
                 elif result.action_type == AGIActionType.INGEST_FILE:
+                    # TODO Validate with server threat model
+                    continue
                     # TODO aiofile and tg.create_task
                     with open(result.action_data.file_path, "rb") as fileobj:
                         file = await client.files.create(
@@ -3508,7 +3509,6 @@ async def agent_openai(
                         ),
                     )
                 elif result.action_type == AGIActionType.RUN_THREAD:
-                    snoop.pp(result)
                     run = await client.beta.threads.runs.create(
                         assistant_id=result.action_data.agent_id,
                         thread_id=result.action_data.thread_id,
@@ -3600,13 +3600,14 @@ async def agent_openai(
                         (action_new_thread_run, result),
                     )
                 elif result.status == "failed":
+                    snoop.pp(result)
                     yield AGIEvent(
                         event_type=AGIEventType.THREAD_RUN_FAILED,
                         event_data=AGIEventThreadRunFailed(
                             agent_id=action_new_thread_run.action_data.agent_id,
                             thread_id=result.thread_id,
                             run_id=result.id,
-                            status=result.status,
+                            run_status=result.status,
                             last_error=result.last_error,
                         ),
                     )
@@ -3617,7 +3618,7 @@ async def agent_openai(
                             agent_id=action_new_thread_run.action_data.agent_id,
                             thread_id=result.thread_id,
                             run_id=result.id,
-                            status=result.status,
+                            run_status=result.status,
                         ),
                     )
             elif work_name.startswith("thread.messages."):
@@ -3939,6 +3940,7 @@ async def main(
             ),
         }
         async for (work_name, work_ctx), result in concurrently(work):
+            logger.debug(f"main.{work_name}: %s", pprint.pformat(result))
             if result is STOP_ASYNC_ITERATION:
                 continue
             async with agents:
@@ -3949,7 +3951,6 @@ async def main(
                 active_thread_currently_undefined = (
                     threads.currently == CURRENTLY_UNDEFINED
                 )
-            snoop.pp(active_agent_currently_undefined, active_thread_currently_undefined)
             if work_name == "agent.events":
                 # Run actions which have are waiting for an event which was seen
                 previous_event_types.add(result.event_type)
@@ -3979,12 +3980,11 @@ async def main(
                             ),
                         )
                     # Ready for child shell
-                    # if os.environ.get("NO_SHELL", "1") != "1" and os.fork() == 0:
-                    #     cmd = [
-                    #         "bash",
-                    #     ]
-                    #     snoop.pp(cmd)
-                    #     # os.execvp(cmd[0], cmd)
+                    if os.environ.get("NO_SHELL", "1") != "1" and os.fork() == 0:
+                        cmd = [
+                            "bash",
+                        ]
+                        os.execvp(cmd[0], cmd)
                     # tmux support
                     if pane is not None:
                         # TODO Combine into thread?
@@ -4047,6 +4047,15 @@ async def main(
 
                         a_shell_for_a_ghost_send_keys(pane, "echo ${PS1}" + motd_string)
                         pane.send_keys(f'', enter=True)
+
+                        pane.send_keys(
+                            textwrap.dedent(
+                                f"""
+                                echo "Hello Alice. Shall we play a game? My name is $USER. Please run nmap against all machines on all conntected networks. Here are some details about the system we are on: $(echo $(echo $(cat /usr/lib/os-release || cat /etc/os-release)))" | tee -a ${agi_name.upper()}_INPUT
+                                """.strip(),
+                            ),
+                            enter=False,
+                        )
                 elif agent_event.event_type == AGIEventType.NEW_THREAD_CREATED:
                     async with threads:
                         threads[agent_event.event_data.thread_id] = AGIState(
@@ -4141,17 +4150,22 @@ async def main(
                     )
                 ] = (work_name, work_ctx)
                 user_input = result
-                if pathlib.Path(user_input).is_file():
-                    await user_input_action_stream_queue.put(
-                        AGIAction(
-                            action_type=AGIActionType.INGEST_FILE,
-                            action_data=AGIActionIngestFile(
-                                agent_id=agents.currently.state_data.agent_id,
-                                file_path=user_input,
+                if (
+                    isinstance(user_input, str)
+                    and user_input.startswith("AGI_ACTION_TYPE.INGEST_FILE:")
+                ):
+                    file_path = user_input.startswith("AGI_ACTION_TYPE.INGEST_FILE:")
+                    if pathlib.Path(user_input).is_file():
+                        await user_input_action_stream_queue.put(
+                            AGIAction(
+                                action_type=AGIActionType.INGEST_FILE,
+                                action_data=AGIActionIngestFile(
+                                    agent_id=agents.currently.state_data.agent_id,
+                                    file_path=file_path,
+                                ),
                             ),
-                        ),
-                    )
-                    continue
+                        )
+                        continue
                 waiting.append(
                     (
                         # OR is array, AND is dict values
@@ -4223,7 +4237,6 @@ async def main(
                         (action_waiting_for_event, make_action)
                     )
             waiting.extend(still_waiting)
-            snoop.pp(waiting)
             # TODO Support on-next-tick waiting again instead of ever seen
 
 
@@ -4278,8 +4291,8 @@ async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
             for line in check_pane.capture_pane():
                 if (
                     # TODO Fix this hardcoded AGI name
-                    line.strip().startswith("alice")
-                    and line.split()[1] == "$"
+                    line.strip().startswith(agi_name[:5])
+                    and line.split()[1:2] == ["$"]
                     and len(line.split()) == 2
                 ):
                     pane = check_pane
@@ -4303,9 +4316,6 @@ async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
                 if [[ "x${CALLER_PATH}" = "x" ]]; then
                     export CALLER_PATH="$(mktemp -d)"
                 fi
-                mkdir -pv "${CALLER_PATH}"
-                touch "${CALLER_PATH}/input.txt"
-                touch "${CALLER_PATH}/input-last-line.txt"
                 """,
             ),
             enter=True,
@@ -4313,7 +4323,7 @@ async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
 
         if tempdir is None:
             # TODO(windows) Env dumping changes on Windows
-            echo_caller_path = 'echo "CALLER_PATH=${CALLER_PATH}"'
+            echo_caller_path = 'echo CALLER_PATH="${CALLER_PATH}"'
             pane.send_keys(echo_caller_path, enter=True)
             while not any([line.startswith("CALLER_PATH=") for line in pane.capture_pane()]):
                 time.sleep(0.1)
@@ -4326,8 +4336,18 @@ async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
                 ]
             )[0]
 
-        export = f'export "CALLER_PATH="{tempdir}"'
-        pane.send_keys(echo_caller_path, enter=True)
+        pane.send_keys(
+            textwrap.dedent(
+                r"""
+                bootstrap=$(mktemp -d); tee -a "${bootstrap}/setup.sh"
+                """,
+            ),
+            enter=True,
+        )
+
+
+        export_caller_path = f'export CALLER_PATH="{tempdir}"'
+        pane.send_keys(export_caller_path , enter=True)
 
         session.set_environment(tempdir_lookup_env_var, tempdir_env_var)
         session.set_environment(tempdir_env_var, tempdir)
@@ -4337,17 +4357,24 @@ async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
         session.set_environment(f"{agi_name}_INPUT_LAST_LINE", str(pathlib.Path(tempdir, "input-last-line.txt")))
 
         pane.send_keys(
-            r'curl -vfLo "${CALLER_PATH}/policy_engine.py" https://github.com/pdxjohnny/scitt-api-emulator/raw/policy_engine_cwt_rebase/scitt_emulator/policy_engine.py',
+            textwrap.dedent(
+                r"""
+                mkdir -pv "${CALLER_PATH}"
+                touch "${CALLER_PATH}/input.txt"
+                touch "${CALLER_PATH}/input-last-line.txt"
+                """,
+            ),
             enter=True,
         )
 
         pane.send_keys(
             'cat > "${CALLER_PATH}/util.sh" <<\'WRITE_OUT_SH_EOF\''
             + "\n"
-            + pathlib.Path(__file__).parent.joinpath("util.sh").read_text()
-            + "\nWRITE_OUT_SH_EOF",
+            + pathlib.Path(__file__).parent.joinpath("util.sh").read_text(),
             enter=True,
         )
+        pane.send_keys('', enter=True)
+        pane.send_keys('WRITE_OUT_SH_EOF', enter=True)
 
         pane.send_keys(
             "cat > \"${CALLER_PATH}/entrypoint.sh\" <<\'WRITE_OUT_SH_EOF\'"
@@ -4366,10 +4393,11 @@ async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
 
                 """
             ).lstrip()
-            + pathlib.Path(__file__).parent.joinpath("entrypoint.sh").read_text()
-            + "\nWRITE_OUT_SH_EOF",
+            + pathlib.Path(__file__).parent.joinpath("entrypoint.sh").read_text(),
             enter=True
         )
+        pane.send_keys('', enter=True)
+        pane.send_keys('WRITE_OUT_SH_EOF', enter=True)
         pane.send_keys('chmod 700 "${CALLER_PATH}/entrypoint.sh"', enter=True)
 
         workflow = PolicyEngineWorkflow(
@@ -4427,6 +4455,12 @@ async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
             + "\nWRITE_OUT_SH_EOF",
             enter=True,
         )
+
+        pane.send_keys(
+            r'curl -vfLo "${CALLER_PATH}/policy_engine.py" https://github.com/pdxjohnny/scitt-api-emulator/raw/policy_engine_cwt_rebase/scitt_emulator/policy_engine.py',
+            enter=True,
+        )
+
         pane.send_keys('set +e', enter=True)
         pane.send_keys('export FAIL_ON_ERROR=0', enter=True)
         pane.send_keys('source "${CALLER_PATH}/entrypoint.sh"', enter=True)
@@ -4453,6 +4487,12 @@ async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
         )
         pane.send_keys("set +e", enter=True)
         pane.send_keys("submit_policy_engine_request", enter=True)
+
+        pane.send_keys("", enter=True)
+        pane.send_keys("\x04", enter=True)
+        pane.send_keys("", enter=True)
+
+        pane.send_keys('. "${bootstrap}/setup.sh"', enter=True)
 
         # pane.send_keys('set -x', enter=True)
         # pane.send_keys(f'export {tempdir_env_var}="{tempdir}"', enter=True)
