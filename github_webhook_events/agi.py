@@ -415,21 +415,47 @@ DETAIL_CLASS_MAPPING = {
     ),
 }
 
+# or `from typing import Annotated` for Python 3.9+
+from typing_extensions import Annotated
+
+from typing import Optional
+from pydantic import BaseModel
+from pydantic.functional_serializers import model_serializer
+
+
+class OmitIfNone:
+    pass
+
 
 class PolicyEngineWorkflowJobStep(BaseModel, extra="forbid"):
-    id: str
+    id: Annotated[Union[str, None], OmitIfNone()]
     # TODO Alias doesn't seem to be working here
     # if_condition: Optional[str] = Field(default=None, alias="if")
     # TODO Implement step if conditionals, YAML load output of eval_js
-    if_condition: Union[str, bool, int, None]
-    name: Union[str, None]
-    uses: Union[str, None]
-    shell: Union[str, None]
+    if_condition: Annotated[Union[bool, None], OmitIfNone()]
+    name: Annotated[Union[str, None], OmitIfNone()]
+    uses: Annotated[Union[str, None], OmitIfNone()]
+    shell: Annotated[Union[str, None], OmitIfNone()]
     # TODO Alias doesn't seem to be working here
     # with_inputs: Optional[Dict[str, Any]] = Field(default_factory=lambda: {}, alias="with")
-    with_inputs: Union[Dict[str, str], None]
-    env: Union[Dict[str, str], None]
-    run: Union[str, None]
+    with_inputs: Annotated[Union[Dict[str, str], None], OmitIfNone()]
+    env: Annotated[Union[Dict[str, str], None], OmitIfNone()]
+    run: Annotated[Union[str, None], OmitIfNone()]
+
+    @model_serializer
+    def _serialize(self):
+        omit_if_none_fields = {
+            k
+            for k, v in self.model_fields.items()
+            if any(isinstance(m, OmitIfNone) for m in v.metadata)
+        }
+
+        obj = {k: v for k, v in self if k not in omit_if_none_fields or v is not None}
+
+        if self.if_condition is True:
+            del obj["if_condition"]
+
+        return obj
 
     @model_validator(mode="before")
     @classmethod
@@ -3688,22 +3714,38 @@ async def DEBUG_TEMP_message_handler(user_name,
                 pane.window.session.show_environment()[tempdir_env_var],
             )
             if not tempdir.is_dir():
+                snoop.pp(pane.window.session.show_environment())
                 raise Exception(f"{tempdir} is not dir")
             # Proposed workflow to be submitted to policy engine to get clear
             # for take off (aka workload id and exec in phase 0). Executing the
             # policy aka the workflow (would be the one we insert to once
             # paths can be mapped to poliy engine workflows easily
+            response = AGIOpenAIAssistantResponse.model_validate_json(
+                agent_event.event_data.message_content
+            )
             proposed_workflow_path = pathlib.Path(tempdir, "proposed-workflow.yml")
             proposed_workflow_path.write_text(
                 yaml.dump(
                     json.loads(
-                        AGIOpenAIAssistantResponse.model_validate_json(
-                            agent_event.event_data.message_content
-                        ).workflow.model_dump_json()
+                        response.workflow.model_dump_json()
                    )
                 )
             )
-            pane.send_keys(f"cat /host/proposed-workflow.yml", enter=True)
+            request_path = pathlib.Path(tempdir, "request.yml")
+            request_path.write_text(
+                yaml.dump(
+                    json.loads(
+                        PolicyEngineRequest(
+                            inputs={},
+                            context={},
+                            stack={},
+                            workflow=response.workflow,
+                        ).model_dump_json(),
+                    )
+                )
+            )
+            pane.send_keys(r"""TASK_ID=$(curl -X POST -H "Content-Type: application/json" -d @<(cat /host/request.yml | python -c 'import json, yaml, sys; print(json.dumps(yaml.safe_load(sys.stdin.read()), indent=4, sort_keys=True))') http://localhost:8080/request/create  | jq -r .detail.id)""", enter=True)
+            pane.send_keys(f"curl http://localhost:8080/request/status/$TASK_ID | jq", enter=True)
             print(f"{user_name}: ", end="")
             print(f"{proposed_workflow_path.resolve()}:\n{proposed_workflow_path.read_text()}")
             print(f"{user_name}: ", end="")
@@ -4082,7 +4124,9 @@ async def tmux_test(*args, **kwargs):
 
                     export PS1='{ps1}'
 
-                    dnf install -y git vim openssh jq python python-pip
+                    dnf install -y git vim openssh jq python python-pip unzip nodejs
+
+                    # curl -fsSL https://deno.land/install.sh | sh
 
                     export EDITOR=vim
 
