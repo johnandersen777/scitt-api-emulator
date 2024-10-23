@@ -3737,6 +3737,7 @@ async def pdb_action_stream(tg, user_name, agi_name, agents, threads, pane: Opti
     alice_input_last_line = pane.window.session.show_environment()[f"{agi_name}_INPUT_LAST_LINE"]
 
     if pathlib.Path(alice_input_sock).is_socket():
+        await connect_and_read(alice_input_sock)
         async for line in read_unix_socket_lines(alice_input_sock):
             yield line
         return
@@ -4521,7 +4522,15 @@ async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
 
 from fastapi import FastAPI, BackgroundTasks
 
-app = FastAPI()
+
+# Set up logging configuration
+async def lifespan_logging(app):
+    logging.basicConfig(level=getattr(logging, os.environ.get("LOGGING", "INFO").upper(), logging.INFO))
+    yield
+
+
+app = FastAPI(lifespan=lifespan_logging)
+
 
 def run_tmux_attach(socket_path, input_socket_path):
     cmd = [
@@ -4548,9 +4557,21 @@ def run_tmux_attach(socket_path, input_socket_path):
         ).wait()
 
 
+async def connect_and_read(socket_path: str, sleep_time: float = 0.1):
+    while True:
+        try:
+            reader, writer = await asyncio.open_unix_connection(socket_path)
+            return
+        except Exception as e:
+            logger.debug(f"connect_and_read({socket_path!r}): Connection failed: {e}")
+        await asyncio.sleep(sleep_time)
+
+
 @app.get("/connect/{socket_stem}")
 async def connect(socket_stem: str, background_tasks: BackgroundTasks):
-    background_tasks.add_task(run_tmux_attach, f"/tmp/{socket_stem}.sock", f"/tmp/{socket_stem}-input.sock")
+    socket_tmux_path = f"/tmp/{socket_stem}.sock"
+    socket_input_path = f"/tmp/{socket_stem}-input.sock"
+    background_tasks.add_task(run_tmux_attach, socket_tmux_path, socket_input_path)
     # parser = make_argparse_parser()
     # args = parser.parse_args(["--socket-path", f"/tmp/{socket_stem}.sock"])
     # task = asyncio.create_task(tmux_test(**vars(args)))
