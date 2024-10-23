@@ -17,9 +17,13 @@ if [ ! -f /usr/bin/deno ]; then
   cp -v $(which deno) /usr/bin/deno || true
 fi
 
-if [ ! -f policy_engine.py ]; then
+policy_engine_deps() {
   python -m pip install -U pip setuptools wheel build
   python -m pip install -U pyyaml snoop pytest httpx cachetools aiohttp gidgethub[aiohttp] celery[redis] fastapi pydantic gunicorn uvicorn
+}
+
+if [ ! -f "${CALLER_PATH}/policy_engine.py" ]; then
+  policy_engine_deps
 
   curl -sfLO https://github.com/pdxjohnny/scitt-api-emulator/raw/policy_engine_cwt_rebase/scitt_emulator/policy_engine.py
 fi

@@ -3772,32 +3772,7 @@ async def DEBUG_TEMP_message_handler(user_name,
                     )
                 )
             )
-            pane.send_keys(f"", enter=True)
-            pane.send_keys(r"""TASK_ID=$(curl -X POST -H "Content-Type: application/json" -d @<(cat "${CALLER_PATH}/request.yml" | python -c 'import json, yaml, sys; print(json.dumps(yaml.safe_load(sys.stdin.read()), indent=4, sort_keys=True))') http://localhost:8080/request/create  | jq -r .detail.id)""", enter=True)
-            pane.send_keys(
-                textwrap.dedent(
-                    r"""
-                    submit_policy_engine_request() {
-                        tail -F "${CALLER_PATH}/policy_engine.logs.txt" &
-                        TAIL_PID=$!
-                        STATUS=$(curl http://localhost:8080/request/status/$TASK_ID | jq -r .status)
-                        while [ "x${STATUS}" != "xcomplete" ]; do
-                            STATUS=$(curl http://localhost:8080/request/status/$TASK_ID | jq -r .status)
-                        done
-                        kill "${TAIL_PID}"
-                        STATUS=$(curl http://localhost:8080/request/status/$TASK_ID | python -m json.tool > "${CALLER_PATH}/last-request-status.json")
-                        cat "${CALLER_PATH}/last-request-status.json" | jq
-                        export STATUS=$(cat "${CALLER_PATH}/last-request-status.json" | jq -r .status)
-                    }
-                    submit_policy_engine_request
-                    """
-                ),
-                enter=True,
-            )
-            print()
-            print(f"{proposed_workflow_path.resolve()}:\n{proposed_workflow_path.read_text().rstrip()}")
-            print()
-            # pane.send_keys("EOF")
+            pane.send_keys(f"submit_policy_engine_request", enter=True)
         else:
             print(
                 f"{agent_state.state_data.agent_name}: {agent_event.event_data.message_content}"
@@ -3940,6 +3915,11 @@ async def main(
                         pane.send_keys(f'', enter=True)
                         pane.send_keys('if [ "x${CALLER_PATH}" = "x" ]; then export CALLER_PATH="' + str(tempdir) + '"; fi', enter=True)
 
+                        pane.send_keys(f'', enter=True)
+                        pane.send_keys("source ${CALLER_PATH}/util.sh", enter=True)
+                        pane.send_keys('if [ ! -f "${CALLER_PATH}/policy_engine.logs.txt" ]; then NO_CELERY=1 python -u ${CALLER_PATH}/policy_engine.py api --workers 1 1>"${CALLER_PATH}/policy_engine.logs.txt" 2>&1 & fi', enter=True)
+                        pane.send_keys(f'', enter=True)
+
                         # pane.send_keys(f'cat >>EOF', enter=True)
                         # a_shell_for_a_ghost_send_keys(pane, motd_string, erase_after=1)
                         # pane.send_keys(f'EOF', enter=True)
@@ -3949,11 +3929,11 @@ async def main(
                         pane.send_keys(f'export {agi_name.upper()}_INPUT_LAST_LINE="' + '${CALLER_PATH}/input-last-line.txt"', enter=True)
 
                         # pane.send_keys(f'cat >>EOF', enter=True)
-                        success_string = f"echo \"{agi_name} $ We\'re in... awaiting instructions at $" + agi_name.upper() + "_INPUT\""
+                        success_string = "echo \"${PS1} $ We\'re in... awaiting instructions at $" + agi_name.upper() + "_INPUT\""
                         # a_shell_for_a_ghost_send_keys(pane, success_string, erase_after=4.2)
                         a_shell_for_a_ghost_send_keys(pane, success_string)
                         pane.send_keys(f'', enter=True)
-                        a_shell_for_a_ghost_send_keys(pane, f"echo {agi_name} $ {motd_string}")
+                        a_shell_for_a_ghost_send_keys(pane, "echo ${PS1}" + motd_string)
                         pane.send_keys(f'', enter=True)
                         # pane.send_keys(f'EOF', enter=True)
                         # pane.send_keys(f'', enter=True)
@@ -4214,6 +4194,21 @@ async def tmux_test(*args, **kwargs):
             session.set_environment(f"{agi_name}_INPUT", os.environ[f"{agi_name}_INPUT"])
             session.set_environment(f"{agi_name}_INPUT_LAST_LINE", os.environ[f"{agi_name}_INPUT_LAST_LINE"])
 
+            pathlib.Path(tempdir, "util.sh").write_text(
+                pathlib.Path(__file__).parent.joinpath("util.sh").read_text(),
+            )
+
+            # TODO Because of rate limit issues need to be able to pass github token
+            headers = {}
+            github_token = None
+            if github_token:
+                headers["Authorization"] = f"Bearer {github_token}"
+
+            policy_engine_url = "https://github.com/pdxjohnny/scitt-api-emulator/raw/policy_engine_cwt_rebase/scitt_emulator/policy_engine.py"
+            request = urllib.request.Request(policy_engine_url, headers=headers)
+            with urllib.request.urlopen(request) as response:
+                pathlib.Path(tempdir, "policy_engine.py").write_bytes(response.read())
+
             pathlib.Path(tempdir, "entrypoint.sh").write_text(
                 textwrap.dedent(
                     f"""
@@ -4253,8 +4248,6 @@ async def tmux_test(*args, **kwargs):
                 # TODO Error handling, immediate trampoline python socket nest
                 while ps1.strip() != pane.capture_pane()[-1].strip():
                     time.sleep(0.1)
-
-                pane.send_keys(f'', enter=True)
 
             await main(*args, pane=pane, **kwargs)
         finally:
