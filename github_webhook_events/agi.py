@@ -4198,7 +4198,11 @@ async def tmux_test(*args, socket_path=None, **kwargs):
             server = libtmux.Server(
                 socket_path=socket_path,
             )
-            session = server.attached_sessions[0]
+            sessions = server.attached_sessions
+            if not sessions:
+                sessions = server.sessions
+            snoop.pp(server)
+            session = sessions[0]
             tempdir_lookup_env_var = f'TEMPDIR_ENV_VAR_TMUX_WINDOW_{session.active_window.id.replace("@", "")}'
             # Make a new tempdir in case old one doesn't exist
             tempdir_env_var = f"TEMPDIR_ENV_VAR_{uuid.uuid4()}".replace("-", "_")

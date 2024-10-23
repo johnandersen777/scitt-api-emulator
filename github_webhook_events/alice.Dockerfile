@@ -12,7 +12,7 @@ ENTRYPOINT /host/entrypoint.sh
 FROM client as server
 
 RUN set -x \
-  && dnf install -y openssh-server curl \
+  && dnf install -y openssh-server curl tmux \
   && ssh-keygen -A
 
 RUN set -x \
