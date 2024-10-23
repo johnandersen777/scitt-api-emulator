@@ -2971,8 +2971,7 @@ logger = logging.getLogger(__name__)
 
 
 class RetreiveInformation(BaseModel, extra="forbid"):
-    information_to_retreive: str
-    place_to_retrieve_from_or_search_all: str
+    query: str
 
 
 class AGIOpenAIAssistantResponseStep(BaseModel, extra="forbid"):
@@ -3735,62 +3734,63 @@ async def agent_openai(
 
                             def make_do_file_search(result):
                                 async def do_file_search():
-                                    with snoop():
-                                        assistant = (
-                                            await openai.resources.beta.assistants.AsyncAssistants(
-                                                client
-                                            ).retrieve(
-                                                assistant_id=result.assistant_id,
+                                    assistant = (
+                                        await openai.resources.beta.assistants.AsyncAssistants(
+                                            client
+                                        ).retrieve(
+                                            assistant_id=result.assistant_id,
+                                        )
+                                    )
+                                    # TODO KVM nested style instead of this manual
+                                    # single level rigid nesting
+                                    retrieval_assistant = (
+                                        await openai.resources.beta.assistants.AsyncAssistants(
+                                            client
+                                        ).retrieve(
+                                            assistant_id=assistant.metadata["retrieval_assistant_id"],
+                                        )
+                                    )
+
+                                    thread = await client.beta.threads.create(
+                                      messages=[
+                                        {
+                                          "role": "user",
+                                          "content": f"run file search to respond to: {tool_call.function.arguments}",
+                                        }
+                                      ]
+                                    )
+
+                                    # The thread now has a vector store with that file in its tool resources.
+                                    snoop.pp(thread.tool_resources.file_search)
+
+                                    run = await client.beta.threads.runs.create_and_poll(
+                                        thread_id=thread.id,
+                                        assistant_id=retrieval_assistant.id,
+                                        poll_interval_ms=1000,
+                                    )
+                                    snoop.pp(run)
+
+                                    messages = list(
+                                        [
+                                            message
+                                            async for message in client.beta.threads.messages.list(
+                                                thread_id=thread.id,
+                                                run_id=run.id,
                                             )
-                                        )
-                                        # TODO KVM nested style instead of this manual
-                                        # single level rigid nesting
-                                        retrieval_assistant = (
-                                            await openai.resources.beta.assistants.AsyncAssistants(
-                                                client
-                                            ).retrieve(
-                                                assistant_id=assistant.metadata["retrieval_assistant_id"],
-                                            )
-                                        )
+                                        ]
+                                    )
 
-                                        thread = await client.beta.threads.create(
-                                          messages=[
-                                            {
-                                              "role": "user",
-                                              "content": f"run file search to respond to: {tool_call.function.arguments}",
-                                            }
-                                          ]
-                                        )
+                                    message_content = messages[0].content[0].text
+                                    annotations = message_content.annotations
+                                    citations = []
+                                    for index, annotation in enumerate(annotations):
+                                        message_content.value = message_content.value.replace(annotation.text, f"[{index}]")
+                                        if file_citation := getattr(annotation, "file_citation", None):
+                                            cited_file = await client.files.retrieve(file_citation.file_id)
+                                            citations.append(f"[{index}] {cited_file.filename}")
 
-                                        # The thread now has a vector store with that file in its tool resources.
-                                        snoop.pp(thread.tool_resources.file_search)
-
-                                        run = await client.beta.threads.runs.create_and_poll(
-                                            thread_id=thread.id,
-                                            assistant_id=retrieval_assistant.id
-                                        )
-
-                                        messages = list(
-                                            [
-                                                message
-                                                async for message in client.beta.threads.messages.list(
-                                                    thread_id=thread.id,
-                                                    run_id=run.id,
-                                                )
-                                            ]
-                                        )
-
-                                        message_content = messages[0].content[0].text
-                                        annotations = message_content.annotations
-                                        citations = []
-                                        for index, annotation in enumerate(annotations):
-                                            message_content.value = message_content.value.replace(annotation.text, f"[{index}]")
-                                            if file_citation := getattr(annotation, "file_citation", None):
-                                                cited_file = await client.files.retrieve(file_citation.file_id)
-                                                citations.append(f"[{index}] {cited_file.filename}")
-
-                                        snoop.pp(message_content.value)
-                                        snoop.pp("\n".join(citations))
+                                    snoop.pp(message_content.value)
+                                    snoop.pp("\n".join(citations))
                                 return do_file_search
 
                             # await call_tool_retreive_information(**tool_arguments)
@@ -4113,7 +4113,8 @@ async def main(
                 while True:
                     new_action = await queue.get()
                     snoop.pp(new_action)
-                    yield new_action
+                    if new_action:
+                        yield new_action
             action_stream = user_input_action_stream_queue_iterator(user_input_action_stream_queue)
             action_stream_insert = user_input_action_stream_queue.put
         for action in action_stream_seed:
