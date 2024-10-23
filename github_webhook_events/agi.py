@@ -13,7 +13,7 @@ import argparse
 import contextlib
 import collections
 import dataclasses
-from typing import Any, NewType, AsyncIterator
+from typing import Any, List, Optional, NewType, AsyncIterator
 
 import openai
 import keyring
@@ -26,6 +26,7 @@ class AGIEventType(enum.Enum):
     NEW_THREAD_RUN_CREATED = enum.auto()
     NEW_THREAD_MESSAGE = enum.auto()
     THREAD_RUN_COMPLETE = enum.auto()
+    THREAD_RUN_IN_PROGRESS = enum.auto()
     THREAD_RUN_EVENT_WITH_UNKNOWN_STATUS = enum.auto()
 
 
@@ -52,6 +53,7 @@ class AGIEventNewThreadRunCreated:
     agent_id: str
     thread_id: str
     run_id: str
+    run_status: str
 
 
 @dataclasses.dataclass
@@ -59,7 +61,15 @@ class AGIEventThreadRunComplete:
     agent_id: str
     thread_id: str
     run_id: str
-    status: str
+    run_status: str
+
+
+@dataclasses.dataclass
+class AGIEventThreadRunInProgress:
+    agent_id: str
+    thread_id: str
+    run_id: str
+    run_status: str
 
 
 @dataclasses.dataclass
@@ -74,6 +84,8 @@ class AGIEventThreadRunEventWithUnknwonStatus(AGIEventNewThreadCreated):
 class AGIEventNewThreadMessage:
     agent_id: str
     thread_id: str
+    message_role: str
+    message_content_type: str
     message_content: str
 
 
@@ -109,6 +121,34 @@ class AGIActionAddMessage:
 
 
 AGIActionStream = NewType("AGIActionStream", AsyncIterator[AGIAction])
+
+
+class AGIStateType(enum.Enum):
+    AGENT = enum.auto()
+    THREAD = enum.auto()
+
+
+@dataclasses.dataclass
+class AGIState:
+    state_type: AGIStateType
+    state_data: Any
+
+
+@dataclasses.dataclass
+class AGIStateAgent:
+    agent_name: str
+    agent_id: str
+    thread_ids: List[str] = dataclasses.field(
+        default_factory=lambda: [],
+    )
+
+
+@dataclasses.dataclass
+class AGIStateThread:
+    agent_id: str
+    thread_id: str
+    most_recent_run_id: Optional[str] = None
+    most_recent_run_status: Optional[str] = None
 
 
 class _KV_STORE_DEFAULT_VALUE:
@@ -165,7 +205,18 @@ class KVStoreKeyring(KVStore):
 
 
 def make_argparse_parser(argv=None):
-    parser = argparse.ArgumentParser(description="LLM Based Assistant")
+    parser = argparse.ArgumentParser(description="Generic AI")
+    parser.add_argument(
+        "--user-name",
+        dest="user_name",
+        type=str,
+        default=KVStoreKeyring.keyring_get_password_or_return(
+            getpass.getuser(),
+            "profile.username",
+            not_found_return_value=getpass.getuser(),
+        ),
+        help="Handle to address the user as",
+    )
     parser.add_argument(
         "--agi-name",
         dest="agi_name",
@@ -185,6 +236,16 @@ def make_argparse_parser(argv=None):
         default=KVStoreKeyring.keyring_get_password_or_return(
             getpass.getuser(),
             "openai.api.key",
+        ),
+        help="OpenAI API Key",
+    )
+    parser.add_argument(
+        "--openai-base-url",
+        dest="openai_base_url",
+        type=str,
+        default=KVStoreKeyring.keyring_get_password_or_return(
+            getpass.getuser(),
+            "openai.api.base_url",
         ),
         help="OpenAI API Key",
     )
@@ -342,6 +403,7 @@ async def agent_openai(
                         agent_id=result.action_data.agent_id,
                         thread_id=run.thread_id,
                         run_id=run.id,
+                        run_status=run.status,
                     ),
                 )
                 work[
@@ -369,7 +431,7 @@ async def agent_openai(
                         agent_id=result.assistant_id,
                         thread_id=result.thread_id,
                         run_id=result.id,
-                        status=result.status,
+                        run_status=result.status,
                     ),
                 )
                 # TODO Send this similar to seed back to a feedback queue to
@@ -382,7 +444,16 @@ async def agent_openai(
                     f"thread.messages.{result.thread_id}",
                     thread_messages_iter,
                 )
-            if result.status == "in_progress":
+            elif result.status == "in_progress":
+                yield AGIEvent(
+                    event_type=AGIEventType.THREAD_RUN_IN_PROGRESS,
+                    event_data=AGIEventThreadRunInProgress(
+                        agent_id=result.assistant_id,
+                        thread_id=result.thread_id,
+                        run_id=result.id,
+                        run_status=result.status,
+                    ),
+                )
                 work[
                     tg.create_task(
                         client.beta.threads.runs.retrieve(
@@ -413,18 +484,29 @@ async def agent_openai(
                         event_data=AGIEventNewThreadMessage(
                             agent_id=result.assistant_id,
                             thread_id=result.thread_id,
-                            role=result.role,
-                            content_type=content.type,
+                            message_role=result.role,
+                            message_content_type=content.type,
                             message_content=content.text.value,
                         ),
                     )
 
 
-def pdb_action_stream_get_user_input():
+class _STDIN_CLOSED:
+    pass
+
+
+STDIN_CLOSED = _STDIN_CLOSED()
+
+
+def pdb_action_stream_get_user_input(user_name: str):
+    user_input = ""
+    sys_stdin_iter = sys.stdin.__iter__()
     try:
-        user_input = input("# \r")
-    except KeyboardInterrupt:
-        sys.exit(0)
+        while not user_input:
+            print(f"{user_name}: ", end="\r")
+            user_input = sys_stdin_iter.__next__().rstrip()
+    except (KeyboardInterrupt, StopIteration):
+        return STDIN_CLOSED
     if "(" in user_input:
         user_input = eval(user_input)
     return user_input
@@ -458,11 +540,13 @@ class AsyncioLockedCurrentlyDict(collections.UserDict):
         await self.lock.__aexit__(exc_type, exc_value, traceback)
 
 
-async def pdb_action_stream(tg, agents, threads, seed):
+async def pdb_action_stream(tg, user_name, agents, threads, action_stream_seed):
+    for action in action_stream_seed:
+        yield action
     while True:
-        for action in seed:
-            yield action
-        user_input = await asyncio.to_thread(pdb_action_stream_get_user_input)
+        user_input = await asyncio.to_thread(
+            pdb_action_stream_get_user_input, user_name
+        )
         if pathlib.Path(user_input).is_file():
             async with agents:
                 active_agent_currently_undefined = (
@@ -475,7 +559,7 @@ async def pdb_action_stream(tg, agents, threads, seed):
             yield AGIAction(
                 action_type=AGIActionType.INGEST_FILE,
                 action_data=AGIActionIngestFile(
-                    agent_id=agents.currently,
+                    agent_id=agents.currently.state_data.agent_id,
                     file_path=user_input,
                 ),
             )
@@ -496,7 +580,7 @@ async def pdb_action_stream(tg, agents, threads, seed):
                 yield AGIAction(
                     action_type=AGIActionType.NEW_THREAD,
                     action_data=AGIActionNewThread(
-                        agent_id=current_agent,
+                        agent_id=current_agent.state_data.agent_id,
                     ),
                 )
                 await tg.create_task(threads.currently_exists.wait())
@@ -505,7 +589,7 @@ async def pdb_action_stream(tg, agents, threads, seed):
             yield AGIAction(
                 action_type=AGIActionType.ADD_MESSAGE,
                 action_data=AGIActionAddMessage(
-                    thread_id=current_thread.thread_id,
+                    thread_id=current_thread.state_data.thread_id,
                     add_message=user_input,
                 ),
             )
@@ -514,6 +598,7 @@ async def pdb_action_stream(tg, agents, threads, seed):
 
 
 async def main(
+    user_name: str,
     agi_name: str,
     kvstore_service_name: str,
     *,
@@ -545,7 +630,7 @@ async def main(
     async with kvstore, asyncio.TaskGroup() as tg:
         if not action_stream:
             action_stream = pdb_action_stream(
-                tg, agents, threads, action_stream_seed
+                tg, user_name, agents, threads, action_stream_seed
             )
 
         if openai_api_key:
@@ -564,7 +649,7 @@ async def main(
 
         async for agent_event in agent_events:
             pprint.pprint(agent_event)
-            print("# ", end="\r")
+            print(f"{user_name}: ", end="\r")
             if agent_event.event_type in (
                 AGIEventType.NEW_AGENT_CREATED,
                 AGIEventType.EXISTING_AGENT_RETRIEVED,
@@ -574,36 +659,75 @@ async def main(
                     agent_event.event_data.agent_id,
                 )
                 async with agents:
-                    agents[
-                        agent_event.event_data.agent_name
-                    ] = agent_event.event_data.agent_id
-                """
-                async with threads:
-                    active_thread_currently_undefined = (
-                        threads.currently == CURRENTLY_UNDEFINED
+                    agents[agent_event.event_data.agent_id] = AGIState(
+                        state_type=AGIStateType.AGENT,
+                        state_data=AGIStateAgent(
+                            agent_name=agent_event.event_data.agent_name,
+                            agent_id=agent_event.event_data.agent_id,
+                        ),
                     )
-                if active_thread_currently_undefined:
-                    active_thread_saved = await kvstore.get(
-                        f"agents.{agent_event.event_data.agent_id}.current_thread.id",
-                        CURRENTLY_UNDEFINED,
-                    )
-                if active_thread_saved != CURRENTLY_UNDEFINED:
-                    threads[active_thread_saved] = AGIEventNewThreadCreated(
-                        **json.loads(active_thread_saved)
-                    )
-                """
             elif agent_event.event_type == AGIEventType.NEW_THREAD_CREATED:
-                await kvstore.set(
-                    f"agents.{agent_event.event_data.agent_id}.current_thread.id",
-                    json.dumps(dataclasses.asdict(agent_event.event_data)),
-                )
+                async with threads:
+                    threads[agent_event.event_data.thread_id] = AGIState(
+                        state_type=AGIStateType.THREAD,
+                        state_data=AGIStateThread(
+                            agent_id=agent_event.event_data.agent_id,
+                            thread_id=agent_event.event_data.thread_id,
+                        ),
+                    )
+                async with agents:
+                    agents[
+                        agent_event.event_data.agent_id
+                    ].state_data.thread_ids.append(
+                        agent_event.event_data.thread_id
+                    )
+                    print(agents[agent_event.event_data.agent_id])
+            elif agent_event.event_type == AGIEventType.NEW_THREAD_RUN_CREATED:
+                async with threads:
+                    thread_state = threads[agent_event.event_data.thread_id]
+                    thread_state.most_recent_run_id = (
+                        agent_event.event_data.run_id
+                    )
+                    thread_state.most_recent_run_status = (
+                        agent_event.event_data.run_status
+                    )
+                    print(thread_state)
+            elif agent_event.event_type == AGIEventType.THREAD_RUN_IN_PROGRESS:
                 async with threads:
                     threads[
                         agent_event.event_data.thread_id
-                    ] = agent_event.event_data
+                    ].state_data.most_recent_run_status = (
+                        agent_event.event_data.run_status
+                    )
+            elif agent_event.event_type == AGIEventType.THREAD_RUN_COMPLETE:
+                async with threads:
+                    threads[
+                        agent_event.event_data.thread_id
+                    ].state_data.most_recent_run_status = (
+                        agent_event.event_data.run_status
+                    )
+                    print(threads[agent_event.event_data.thread_id])
+                async with agents:
+                    print(agents[agent_event.event_data.agent_id])
+                    agents[
+                        agent_event.event_data.agent_id
+                    ].state_data.thread_ids.remove(
+                        agent_event.event_data.thread_id
+                    )
+                    print(agents[agent_event.event_data.agent_id])
+            elif agent_event.event_type == AGIEventType.NEW_THREAD_MESSAGE:
+                async with agents:
+                    agent_state = agents[agent_event.event_data.agent_id]
+                # TODO https://rich.readthedocs.io/en/stable/markdown.html
+                if agent_event.event_data.message_content_type == "text":
+                    print(
+                        f"{agent_state.state_data.agent_name}: {agent_event.event_data.message_content}"
+                    )
+                    print(f"{user_name}: ", end="\r")
 
 
 if __name__ == "__main__":
+    # TODO Hook each thread to a terminal context with tmux
     parser = make_argparse_parser()
 
     args = parser.parse_args(sys.argv[1:])
