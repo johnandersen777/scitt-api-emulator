@@ -2,8 +2,6 @@
 
 > Unstable Demo Instance
 
-[![asciicast](https://asciinema.org/a/620184.svg)](https://asciinema.org/a/620184)
-
 ## What is SCITT?
 
 The Supply Chain Integrity, Transparency and Trust (SCITT) initiative: [https://scitt.io](https://scitt.io)
@@ -19,3 +17,8 @@ Here are some things you can do with this instance (which is wiped periodically)
 - Submit Statements
 - Retrieve Statements
 - Retrieve Receipts
+
+For more examples see
+
+- https://github.com/scitt-community/scitt-api-emulator/tree/main/docs/
+- https://github.com/scitt-community/scitt-examples/
