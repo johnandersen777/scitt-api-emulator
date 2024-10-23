@@ -1,9 +1,11 @@
 import os
 import sys
+import time
 import json
 import pathlib
 import argparse
 import subprocess
+import contextlib
 import http.server
 
 import httptest
@@ -43,7 +45,8 @@ class GitHubWebhookLogger(http.server.BaseHTTPRequestHandler):
             "-R",
             "--repo",
             dest="org_and_repo",
-            required=True,
+            default=None,
+            required=False,
             type=str,
             help="GitHub repo in format org/repo",
         )
@@ -66,16 +69,25 @@ class GitHubWebhookLogger(http.server.BaseHTTPRequestHandler):
                     logging_server.url(), state_dir=str(args.state_dir.resolve())
                 )
             ) as cache_server:
-                subprocess.check_call(
-                    [
-                        "gh",
-                        "webhook",
-                        "forward",
-                        f"--repo={args.org_and_repo}",
-                        "--events=*",
-                        f"--url={cache_server.url()}",
-                    ]
-                )
+                if args.org_and_repo:
+                    subprocess.check_call(
+                        [
+                            "gh",
+                            "webhook",
+                            "forward",
+                            f"--repo={args.org_and_repo}",
+                            "--events=*",
+                            f"--url={cache_server.url()}",
+                        ]
+                    )
+                else:
+                    print(logging_server.url())
+                    sys.stdout.buffer.flush()
+                    sys.stdout.close()
+                    sys.stdout = sys.stderr
+                    with contextlib.suppress(KeyboardInterrupt):
+                        while True:
+                            time.sleep(600)
 
 
 if __name__ == "__main__":
