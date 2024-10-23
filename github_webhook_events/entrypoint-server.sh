@@ -10,7 +10,7 @@ mkdir -p "${CALLER_PATH}"
     for user in $(cat /var/run/alice-server/sshd.logs.txt 2>/dev/null | grep 'invalid user' | sed -e 's/.*invalid user //g' -e 's/ .*//g'); do
       found=$(grep -E "^${user}:" /etc/passwd);
       if [[ "x${found}" = "x" ]]; then
-        useradd "${user}";
+        useradd "${user}" 1>/dev/null 2>&1;
       fi;
     done;
     sleep 0.1;
