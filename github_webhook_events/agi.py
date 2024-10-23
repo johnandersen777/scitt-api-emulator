@@ -17,7 +17,10 @@ ssh -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o Passw
 ## Setup: Python
 
 ```bash
-python -m pip install -U pip setuptools wheel snoop openai keyring libtmux
+python -m pip install -U pip setuptools wheel snoop openai keyring libtmux uvicorn pytest gidgethub[aiohttp] aiohttp gunicorn celery fastapi[standard] cachetools
+# 3.11+ required for asyncio.TaskGroup
+python3.11 -m uvicorn "agi:app" --uds "/tmp/agi.sock"
+
 ```
 
 ## Testing
@@ -244,6 +247,7 @@ python -u ./scitt_emulator/policy_engine.py client --endpoint http://localhost:8
 import os
 import io
 import re
+import tty
 import sys
 import json
 import time
@@ -254,10 +258,12 @@ import shlex
 import types
 import atexit
 import shutil
+import signal
 import asyncio
 import pathlib
 import zipfile
 import tarfile
+import termios
 import inspect
 import logging
 import argparse
@@ -3274,6 +3280,19 @@ def make_argparse_parser(argv=None):
         default=None,
         type=str,
     )
+    # TODO Integrate pty/UNIX socket stuff cleanly
+    parser.add_argument(
+        "--client-pty-socket-path",
+        dest="client_pty_socket_path",
+        default=None,
+        type=str,
+    )
+    parser.add_argument(
+        "--control-pty-socket-path",
+        dest="control_pty_socket_path",
+        default=None,
+        type=str,
+    )
     parser.add_argument(
         "--agi-name",
         dest="agi_name",
@@ -3979,12 +3998,27 @@ async def connect_and_read(socket_path: str, sleep_time: float = 0.1):
         await asyncio.sleep(sleep_time)
 
 
-async def pdb_action_stream(tg, user_name, agi_name, agents, threads, pane: Optional[libtmux.Pane] = None):
+async def pdb_action_stream(
+    tg,
+    user_name,
+    agi_name,
+    agents,
+    threads,
+    pane: Optional[libtmux.Pane] = None,
+    client_pty_socket_path: Optional[pathlib.Path] = None,
+    control_pty_socket_path: Optional[pathlib.Path] = None,
+):
     # TODO Take ALICE_INPUT from args
     if pane is not None:
         alice_input = pane.window.session.show_environment()[f"{agi_name}_INPUT"]
         alice_input_sock = pane.window.session.show_environment()[f"{agi_name}_INPUT_SOCK"]
         alice_input_last_line = pane.window.session.show_environment()[f"{agi_name}_INPUT_LAST_LINE"]
+    if (
+        client_pty_socket_path is not None
+        and control_pty_socket_path is not None
+    ):
+        # TODO Start UNIX servers with async with or asyncexitstack, indent rest
+        pass
 
     if pathlib.Path(alice_input_sock).is_socket():
         await connect_and_read(alice_input_sock)
@@ -4106,6 +4140,8 @@ async def main(
     openai_api_key: str = None,
     openai_base_url: Optional[str] = None,
     pane: Optional[libtmux.Pane] = None,
+    client_pty_socket_path: Optional[pathlib.Path] = None,
+    control_pty_socket_path: Optional[pathlib.Path] = None,
 ):
     if log is not None:
         logging.basicConfig(level=log)
@@ -4142,6 +4178,8 @@ async def main(
             agents,
             threads,
             pane=pane,
+            client_pty_socket_path=client_pty_socket_path,
+            control_pty_socket_path=control_pty_socket_path,
         )
 
         # Waiting Event Stream and Callbacks
@@ -4567,7 +4605,18 @@ def a_shell_for_a_ghost_send_keys(pane, send_string, erase_after=None):
             time.sleep(0.01)
 
 
-async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
+async def pty_test(*args, socket_path=None, input_socket_path=None, client_pty_socket_path=None, control_pty_socket_path=None, **kwargs):
+    tempdir = pathlib.Path(client_pty_socket_path).parent.resolve()
+    try:
+        await main(*args, client_pty_socket_path=client_pty_socket_path,
+                   control_pty_socket_path=control_pty_socket_path, **kwargs)
+    finally:
+        with contextlib.suppress(Exception):
+            shutil.rmtree(tempdir, ignore_errors=True)
+            shutil.rmtree(tempdir, ignore_errors=True)
+
+
+async def tmux_test(*args, socket_path=None, input_socket_path=None, client_pty_socket_path=None, control_pty_socket_path=None, **kwargs):
     pane = None
     tempdir = None
     possible_tempdir = tempdir
@@ -4889,4 +4938,33 @@ if __name__ == "__main__":
 
     # TODO LiteLLM
     # asyncio.run(main(**vars(args)))
-    asyncio.run(tmux_test(**vars(args)))
+    if (
+        args.client_pty_socket_path is not None
+        and args.control_pty_socket_path is not None
+    ):
+        asyncio.run(pty_test(**vars(args)))
+    elif (
+        args.socket_path is not None
+        and args.input_socket_path is not None
+    ):
+        asyncio.run(tmux_test(**vars(args)))
+    elif (
+        args.socket_path is not None
+    ):
+        self_path = pathlib.Path(__file__).parent.resolve()
+        parent_path = self_path.parent.resolve()
+        os.chdir(parent_path)
+        cmd = [
+            sys.executable,
+            "-u",
+            "-m",
+            f"{self_path.stem}:app",
+            "--uds",
+            args.server_agi_socket_path,
+        ]
+        os.execvp(
+            cmd[0],
+            cmd,
+        )
+    else:
+        raise Exception("Need either --client-pty-socket-path and --control-pty-socket-path or --socket-path and --input-socket-path or --server-agi-socket-path")
