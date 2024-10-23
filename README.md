@@ -20,8 +20,8 @@ Here are some things you can do with this instance (which is wiped periodically)
 
 For more examples see
 
-- [https://github.com/scitt-community/scitt-api-emulator/tree/main/docs/](github.com/scitt-community/scitt-api-emulator/docs)
-- [https://github.com/scitt-community/scitt-examples/](github.com/scitt-community/scitt-examples)
+- [https://github.com/scitt-community/scitt-api-emulator/tree/main/docs/](https://github.com/scitt-community/scitt-api-emulator/tree/main/docs/)
+- [https://github.com/scitt-community/scitt-examples/](https://github.com/scitt-community/scitt-examples)
 
 ## Federation via ActivityPub
 
@@ -32,7 +32,7 @@ For more examples see
       enabling a consistent pattern for notification of new vulnerability
       and other Software Supply Chain Security data.
 
-> Below links to recording of IETF 118 SCITT Meeting, Corresponding asciinema link: https://asciinema.org/a/619517
+> Below links to recording of IETF 118 SCITT Meeting, Corresponding asciinema link: [https://asciinema.org/a/619517](https://asciinema.org/a/619517)
 
 [![asciicast-federation-activitypub-bovine](https://asciinema.org/a/619517.svg)](https://www.youtube.com/watch?v=zEGob4oqca4&t=5354s)
 
