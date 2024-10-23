@@ -4063,32 +4063,39 @@ async def tmux_test(*args, **kwargs):
                     tempdir = possible_tempdir
             pane = None
             for check_pane in session.active_window.panes:
-                if ps1.strip() == "\n".join(check_pane.capture_pane()[-1:]).strip():
+                if ps1.strip() in check_pane.capture_pane():
                     pane = check_pane
                     break
             session.set_environment(tempdir_lookup_env_var, tempdir_env_var)
             session.set_environment(tempdir_env_var, tempdir)
-            if pane is None or possible_tempdir != tempdir:
+            pathlib.Path(tempdir, "entrypoint.sh").write_text(
+                textwrap.dedent(
+                    f"""
+                    #!/usr/bin/env bash
+                    set -x
+
+                    export PS1='{ps1}'
+
+                    dnf install -y git vim openssh jq python python-pip python-venv
+
+                    python -m pip install -U pip setuptools wheel build
+                    python -m pip install -U pyyaml snoop pytest aiohttp gidgethub[aiohttp] celery[redis] fastapi pydantic
+
+                    curl -sfLO https://github.com/pdxjohnny/scitt-api-emulator/raw/policy_engine_cwt_rebase/scitt_emulator/policy_engine.py
+
+                    (python -u policy_engine.py 2>&1 | tee policy_engine.logs.txt) &
+
+                    # clear
+
+                    exec bash
+                    """
+                ).lstrip()
+            )
+            pathlib.Path(tempdir, "entrypoint.sh").chmod(0o0755)
+            if pane is None:
                 pane = session.active_window.active_pane.split()
                 # pane = session.active_window.split(attach=False)
                 pathlib.Path(tempdir, "host_path.txt").write_text(tempdir_env_var)
-                pathlib.Path(tempdir, "entrypoint.sh").write_text(
-                    textwrap.dedent(
-                        f"""
-                        #!/usr/bin/env bash
-                        set -x
-
-                        export PS1='{ps1}'
-
-                        dnf install -y git vim openssh jq python
-
-                        clear
-
-                        exec bash
-                        """
-                    ).lstrip()
-                )
-                pathlib.Path(tempdir, "entrypoint.sh").chmod(0o0755)
                 pane.send_keys('set -x', enter=True)
                 pane.send_keys(f'export {tempdir_env_var}="{tempdir}"', enter=True)
                 pane.send_keys('docker run --rm -ti -v "${' + tempdir_env_var + '}:/host:z" --entrypoint /host/entrypoint.sh registry.fedoraproject.org/fedora' +'; rm -rfv ${' + tempdir_env_var + '}', enter=True)
@@ -4099,6 +4106,7 @@ async def tmux_test(*args, **kwargs):
 
                 a_shell_for_a_ghost_send_keys(pane, motd_string, erase_after=1)
             else:
+                pane.send_keys('bash /host/entrypoint.sh', enter=True)
                 threading.Thread(target=a_shell_for_a_ghost_send_keys,
                                  args=[pane, motd_string, 1]).run()
 
