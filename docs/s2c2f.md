@@ -10,6 +10,8 @@ Upstream for S2C2F sections: https://github.com/ossf/s2c2f/blob/98803e0a558e6d8c
 
 Goal: Create YAML file allowing users to map webhook event data to creation of data notarized by SCITT, statments and receipts created. Use YAML as basis for overall automatable format for alignment to S2C2F.
 
+Use presence of data in respective feeds/subjects to determine overall result (URL or RDF + jq / jsonpath?)
+
 | **Requirement ID** | **Requirement Title** | **References** |
 | --- | --- | --- |
 | ING-1 | Use package managers trusted by your organization | |
