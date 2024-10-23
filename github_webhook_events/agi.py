@@ -4072,14 +4072,26 @@ async def tmux_test(*args, **kwargs):
                 pane = session.active_window.active_pane.split()
                 # pane = session.active_window.split(attach=False)
                 pathlib.Path(tempdir, "host_path.txt").write_text(tempdir_env_var)
-                # TODO entrypoint via volume mount
+                pathlib.Path(tempdir, "entrypoint.sh").write_text(
+                    textwrap.dedent(
+                        f"""
+                        #!/usr/bin/env bash
+                        set -x
+
+                        export PS1='{ps1}'
+
+                        dnf install -y git vim openssh jq python
+
+                        clear
+
+                        exec bash
+                        """
+                    ).lstrip()
+                )
+                pathlib.Path(tempdir, "entrypoint.sh").chmod(0o0755)
                 pane.send_keys('set -x', enter=True)
                 pane.send_keys(f'export {tempdir_env_var}="{tempdir}"', enter=True)
-                pane.send_keys('docker run --rm -ti -v "${' + tempdir_env_var + '}:/host:z" registry.fedoraproject.org/fedora' +'; rm -fv ${' + tempdir_env_var + '}', enter=True)
-                pane.send_keys(f"export PS1='{ps1}'", enter=True)
-                pane.send_keys(f"set -x", enter=True)
-                # pane.send_keys(f"dnf install -y git vim openssh jq python", enter=True)
-                # pane.send_keys(f"")
+                pane.send_keys('docker run --rm -ti -v "${' + tempdir_env_var + '}:/host:z" --entrypoint /host/entrypoint.sh registry.fedoraproject.org/fedora' +'; rm -rfv ${' + tempdir_env_var + '}', enter=True)
 
                 # TODO Error handling, immediate trampoline python socket nest
                 while ps1.strip() != pane.capture_pane()[-1].strip():
