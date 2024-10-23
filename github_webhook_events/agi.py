@@ -3641,7 +3641,6 @@ def pdb_action_stream_get_user_input(user_name: str):
     user_input = ""
     sys_stdin_iter = sys.stdin.__iter__()
     try:
-        print(f"{user_name}: ", end="")
         while not user_input:
             user_input = sys_stdin_iter.__next__().rstrip()
     except (KeyboardInterrupt, StopIteration):
@@ -3677,10 +3676,10 @@ class AsyncioLockedCurrentlyDict(collections.UserDict):
         await self.lock.__aexit__(exc_type, exc_value, traceback)
 
 
-async def pdb_action_stream(tg, user_name, agents, threads):
+async def pdb_action_stream(tg, user_name, agi_name, agents, threads):
     # TODO Take ALICE_INPUT from args
-    alice_input = os.environ["ALICE_INPUT"]
-    alice_input_last_line = os.environ["ALICE_INPUT_LAST_LINE"]
+    alice_input = os.environ[f"{agi_name}_INPUT"]
+    alice_input_last_line = os.environ[f"{agi_name}_INPUT_LAST_LINE"]
 
     file_path = alice_input
     line_number_path = alice_input_last_line
@@ -3773,21 +3772,22 @@ async def DEBUG_TEMP_message_handler(user_name,
                     )
                 )
             )
-            pane.send_keys(r"""TASK_ID=$(curl -X POST -H "Content-Type: application/json" -d @<(cat /host/request.yml | python -c 'import json, yaml, sys; print(json.dumps(yaml.safe_load(sys.stdin.read()), indent=4, sort_keys=True))') http://localhost:8080/request/create  | jq -r .detail.id)""", enter=True)
+            pane.send_keys(f"", enter=True)
+            pane.send_keys(r"""TASK_ID=$(curl -X POST -H "Content-Type: application/json" -d @<(cat "${CALLER_PATH}/request.yml" | python -c 'import json, yaml, sys; print(json.dumps(yaml.safe_load(sys.stdin.read()), indent=4, sort_keys=True))') http://localhost:8080/request/create  | jq -r .detail.id)""", enter=True)
             pane.send_keys(
                 textwrap.dedent(
                     r"""
                     submit_policy_engine_request() {
-                        tail -F /host/policy_engine.logs.txt &
+                        tail -F "${CALLER_PATH}/policy_engine.logs.txt" &
                         TAIL_PID=$!
                         STATUS=$(curl http://localhost:8080/request/status/$TASK_ID | jq -r .status)
                         while [ "x${STATUS}" != "xcomplete" ]; do
-                            STATsUS=$(curl http://localhost:8080/request/status/$TASK_ID | jq -r .status)
+                            STATUS=$(curl http://localhost:8080/request/status/$TASK_ID | jq -r .status)
                         done
                         kill "${TAIL_PID}"
-                        STATUS=$(curl http://localhost:8080/request/status/$TASK_ID | python -m json.tool > /host/last-request-status.json)
-                        cat /host/last-request-status.json | jq
-                        export STATUS=$(cat /host/last-request-status.json | jq -r .status)
+                        STATUS=$(curl http://localhost:8080/request/status/$TASK_ID | python -m json.tool > "${CALLER_PATH}/last-request-status.json")
+                        cat "${CALLER_PATH}/last-request-status.json" | jq
+                        export STATUS=$(cat "${CALLER_PATH}/last-request-status.json" | jq -r .status)
                     }
                     submit_policy_engine_request
                     """
@@ -3796,7 +3796,7 @@ async def DEBUG_TEMP_message_handler(user_name,
             )
             print()
             print(f"{proposed_workflow_path.resolve()}:\n{proposed_workflow_path.read_text().rstrip()}")
-            print(f"{user_name}: ", end="")
+            print()
             # pane.send_keys("EOF")
         else:
             print(
@@ -3837,24 +3837,11 @@ async def main(
     agents = AsyncioLockedCurrentlyDict()
     threads = AsyncioLockedCurrentlyDict()
 
-    alice_input_path = pathlib.Path(
-        "~", ".local", "agi", agi_name, "input.txt",
-    ).expanduser()
-    alice_input_path.parent.mkdir(parents=True, exist_ok=True)
-    alice_input_path.write_text("")
-
-    alice_input_last_line_path = alice_input_path.parent.joinpath(
-        "input-last-line.txt",
-    )
-    alice_input_last_line_path.write_text("")
-
-    os.environ["ALICE_INPUT"] = str(alice_input_path.resolve())
-    os.environ["ALICE_INPUT_LAST_LINE"] = str(alice_input_last_line_path.resolve())
-
     async with kvstore, asyncio.TaskGroup() as tg:
         unvalidated_user_input_action_stream = pdb_action_stream(
             tg,
             user_name,
+            agi_name,
             agents,
             threads,
         )
@@ -3944,6 +3931,34 @@ async def main(
                             "bash",
                         ]
                         os.execvp(cmd[0], cmd)
+                    # tmux support
+                    if pane is not None:
+                        # TODO Combine into thread?
+                        # threading.Thread(target=a_shell_for_a_ghost_send_keys,
+                        #                  args=[pane, motd_string, 1]).run()
+                        tempdir = pathlib.Path(os.environ[f"{agi_name}_INPUT"]).parent
+                        pane.send_keys(f'', enter=True)
+                        pane.send_keys('if [ "x${CALLER_PATH}" = "x" ]; then export CALLER_PATH="' + str(tempdir) + '"; fi', enter=True)
+
+                        # pane.send_keys(f'cat >>EOF', enter=True)
+                        # a_shell_for_a_ghost_send_keys(pane, motd_string, erase_after=1)
+                        a_shell_for_a_ghost_send_keys(pane, motd_string)
+                        pane.send_keys(f'', enter=True)
+                        # pane.send_keys(f'EOF', enter=True)
+                        # pane.send_keys(f'', enter=True)
+
+                        pane.send_keys(f'export {agi_name.upper()}_INPUT="' + '${CALLER_PATH}/input.txt"', enter=True)
+                        pane.send_keys(f'export {agi_name.upper()}_INPUT_LAST_LINE="' + '${CALLER_PATH}/input-last-line.txt"', enter=True)
+
+                        # pane.send_keys(f'cat >>EOF', enter=True)
+                        success_string = f"echo \"{agi_name}: We\'re in... awaiting instructions at $" + agi_name.upper() + "_INPUT\""
+                        # a_shell_for_a_ghost_send_keys(pane, success_string, erase_after=4.2)
+                        a_shell_for_a_ghost_send_keys(pane, success_string)
+                        pane.send_keys(f'', enter=True)
+                        # pane.send_keys(f'EOF', enter=True)
+                        # pane.send_keys(f'', enter=True)
+
+                        pane.send_keys(f'ls -lAF ${agi_name.upper()}_INPUT', enter=True)
                 elif agent_event.event_type == AGIEventType.NEW_THREAD_CREATED:
                     async with threads:
                         threads[agent_event.event_data.thread_id] = AGIState(
@@ -4133,8 +4148,9 @@ async def main(
 
 import libtmux
 
-motd_string = "... Battle Control, Online ..."
+motd_string = "echo ... Battle Control, Online ..."
 
+# @snoop
 def a_shell_for_a_ghost_send_keys(pane, send_string, erase_after=None):
     for char in send_string:
         pane.send_keys(char, enter=False)
@@ -4143,13 +4159,13 @@ def a_shell_for_a_ghost_send_keys(pane, send_string, erase_after=None):
     if erase_after is not None:
         for _ in range(0, int(int(erase_after / 0.1) / 6)):
             for char in send_string[-3:]:
-                pane.send_keys(f"\b", enter=False)
+                pane.cmd("send", "C-BSpace")
                 time.sleep(0.1)
             for char in send_string[-3:]:
                 pane.send_keys(char, enter=False)
                 time.sleep(0.1)
         for _ in range(0, len(send_string)):
-            pane.send_keys(f"\b", enter=False)
+            pane.cmd("send", "C-BSpace")
             time.sleep(0.01)
 
 
@@ -4161,12 +4177,28 @@ async def tmux_test(*args, **kwargs):
     if not user_tempdir_path.is_dir():
         user_tempdir_path.mkdir(parents=True)
 
+    alice_input_path = pathlib.Path(
+        "~", ".local", "agi", agi_name, "input.txt",
+    ).expanduser()
+    alice_input_path.parent.mkdir(parents=True, exist_ok=True)
+    alice_input_path.write_text("")
+
+    alice_input_last_line_path = alice_input_path.parent.joinpath(
+        "input-last-line.txt",
+    )
+    alice_input_last_line_path.write_text("")
+
+    os.environ[f"{agi_name}_INPUT"] = str(alice_input_path.resolve())
+    os.environ[f"{agi_name}_INPUT_LAST_LINE"] = str(alice_input_last_line_path.resolve())
+
     with tempfile.TemporaryDirectory(dir=user_tempdir_path, delete=False) as tempdir:
         pane = None
         possible_tempdir = tempdir
         try:
             server = libtmux.Server()
             session = server.attached_sessions[0]
+            session.set_environment(f"{agi_name}_INPUT", str(alice_input_path.resolve()))
+            session.set_environment(f"{agi_name}_INPUT_LAST_LINE", str(alice_input_last_line_path.resolve()))
             tempdir_lookup_env_var = f'TEMPDIR_ENV_VAR_TMUX_WINDOW_{session.active_window.id.replace("@", "")}'
             # Make a new tempdir in case old one doesn't exist
             tempdir_env_var = f"TEMPDIR_ENV_VAR_{uuid.uuid4()}".replace("-", "_")
@@ -4185,36 +4217,24 @@ async def tmux_test(*args, **kwargs):
             session.set_environment(tempdir_env_var, tempdir)
             pathlib.Path(tempdir, "entrypoint.sh").write_text(
                 textwrap.dedent(
-                    r"""
+                    f"""
                     #!/usr/bin/env bash
                     set -xeuo pipefail
 
                     trap bash EXIT
 
-                    dnf install -y git vim openssh jq python python-pip unzip nodejs
+                    export CALLER_PATH='{tempdir}'
+                    export PS1='{ps1}'
 
-                    curl -fsSL https://deno.land/install.sh | sh
-                    export DENO_INSTALL="${HOME}/.deno"
-                    export PATH="$DENO_INSTALL/bin:$PATH"
-                    hash -r
-                    cp -v $(which deno) /usr/bin/deno || true
-
-                    export EDITOR=vim
-
-                    python -m pip install -U pip setuptools wheel build
-                    python -m pip install -U pyyaml snoop pytest httpx cachetools aiohttp gidgethub[aiohttp] celery[redis] fastapi pydantic gunicorn uvicorn
-
-                    curl -sfLO https://github.com/pdxjohnny/scitt-api-emulator/raw/policy_engine_cwt_rebase/scitt_emulator/policy_engine.py
-
-                    NO_CELERY=1 python -u policy_engine.py api --workers 1 1>/host/policy_engine.logs.txt 2>&1 &
-
-                    # clear
                     """
                 ).lstrip()
+                + pathlib.Path(__file__).parent.joinpath("entrypoint.sh").read_text()
                 + textwrap.dedent(
-                    f"""
+                    r"""
 
-                    export PS1='{ps1}'
+                    NO_CELERY=1 python -u policy_engine.py api --workers 1 1>"${CALLER_PATH}/policy_engine.logs.txt" 2>&1 &
+
+                    # clear
 
                     bash
                     """
@@ -4228,17 +4248,13 @@ async def tmux_test(*args, **kwargs):
                 pane.send_keys('set -x', enter=True)
                 pane.send_keys(f'export {tempdir_env_var}="{tempdir}"', enter=True)
                 pane.send_keys('docker run --rm -ti -v "${' + tempdir_env_var + '}:/host:z" --entrypoint /host/entrypoint.sh registry.fedoraproject.org/fedora' +'; rm -rfv ${' + tempdir_env_var + '}', enter=True)
-                # pane.send_keys('docker run --rm -ti -v "${' + tempdir_env_var + '}:/host:z" --entrypoint /host/entrypoint.sh alice' +'; rm -rfv ${' + tempdir_env_var + '}', enter=True)
 
                 # TODO Error handling, immediate trampoline python socket nest
                 while ps1.strip() != pane.capture_pane()[-1].strip():
                     time.sleep(0.1)
 
-                a_shell_for_a_ghost_send_keys(pane, motd_string, erase_after=1)
-            else:
-                # pane.send_keys('bash /host/entrypoint.sh', enter=True)
-                threading.Thread(target=a_shell_for_a_ghost_send_keys,
-                                 args=[pane, motd_string, 1]).run()
+                pane.send_keys(f'', enter=True)
+                pane.send_keys(f'export CALLER_PATH="/host"', enter=True)
 
             await main(*args, pane=pane, **kwargs)
         finally:
