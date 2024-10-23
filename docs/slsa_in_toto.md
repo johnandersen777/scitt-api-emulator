@@ -59,27 +59,15 @@ From in-toto example:
     "predicate": {
         "result": "PASSED",
         "configuration": [{
-            "name": ".github/workflows/ci.yml",
-            "downloadLocation": "https://github.com/in-toto/in-toto/blob/d20ace7968ba43c0219f62d71334c1095bab1602/.github/workflows/ci.yml",
+            "name": ".github/workflows/scorecard.yml",
+            "downloadLocation": "https://github.com/in-toto/in-toto/blob/d20ace7968ba43c0219f62d71334c1095bab1602/.github/workflows/scorecard.yml",
             "digest": {
                 "gitBlob": "ebe4add40f63c3c98bc9b32ff1e736f04120b023"
             }
         }],
         "url": "https://github.com/in-toto/in-toto/actions/runs/4425592351",
         "passedTests": [
-            "build (3.7, ubuntu-latest, py)",
-            "build (3.7, macos-latest, py)",
-            "build (3.7, windows-latest, py)",
-            "build (3.8, ubuntu-latest, py)",
-            "build (3.8, macos-latest, py)",
-            "build (3.8, windows-latest, py)",
-            "build (3.9, ubuntu-latest, py)",
-            "build (3.9, macos-latest, py)",
-            "build (3.9, windows-latest, py)",
-            "build (3.10, ubuntu-latest, py)",
-            "build (3.10, macos-latest, py)",
-            "build (3.10, windows-latest, py)",
-            "build (3.x, ubuntu-latest, lint)"
+            "scorecard"
         ],
         "warnedTests": [],
         "failedTests": []
