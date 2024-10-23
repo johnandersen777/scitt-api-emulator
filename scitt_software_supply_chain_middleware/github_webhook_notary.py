@@ -8,6 +8,7 @@
 import os
 import sys
 import json
+import hmac
 import base64
 import aiohttp
 import hashlib
@@ -16,6 +17,7 @@ import logging
 import tempfile
 import subprocess
 import dataclasses
+import http.client
 import concurrent.futures
 from typing import Optional
 
@@ -27,9 +29,31 @@ from quart import Quart, Blueprint, current_app, request, jsonify, send_from_dir
 
 logger = logging.getLogger(__name__)
 
+# TODO Take secret for webhook validation via config
+secret_token = os.environ["GITHUB_WEBHOOK_SECRET_TOKEN"]
+
 github_webhook_notary = Blueprint(
     "github_webhook_notary", __name__, url_prefix="/github-webhook-notary"
 )
+
+
+# https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries#python-example
+def verify_signature(payload_body, secret_token, signature_header):
+    """Verify that the payload was sent from GitHub by validating SHA256.
+
+    Raise and return 403 if not authorized.
+
+    Args:
+        payload_body: original request body to verify (request.body())
+        secret_token: GitHub app webhook token (WEBHOOK_SECRET)
+        signature_header: header received from GitHub (x-hub-signature-256)
+    """
+    if not signature_header:
+        raise http.client.HTTPException(status_code=403, detail="x-hub-signature-256 header is missing!")
+    hash_object = hmac.new(secret_token.encode('utf-8'), msg=payload_body, digestmod=hashlib.sha256)
+    expected_signature = "sha256=" + hash_object.hexdigest()
+    if not hmac.compare_digest(expected_signature, signature_header):
+        raise http.client.HTTPException(status_code=403, detail="Request signatures didn't match!")
 
 
 @dataclasses.dataclass
@@ -62,7 +86,12 @@ def attestation_fields(name, sha_chksm):
 
 @github_webhook_notary.route("/", methods=["POST"])
 async def github_webhook_notary_post_route() -> tuple[str, int]:
-    # TODO Webhook secret hash validation
+    global secret_token
+    payload_body = await request.get_data()
+    signature_header = request.headers.get("X-Hub-Signature-256")
+    
+    verify_signature(payload_body, secret_token, signature_header)
+
     event = request.headers.get("X-GitHub-Event")
     if event != "push":
         return (
@@ -77,7 +106,7 @@ async def github_webhook_notary_post_route() -> tuple[str, int]:
 
     config = current_app.config[github_webhook_notary.name]
 
-    payload = json.loads(await request.get_data())
+    payload = json.loads(payload_body)
     commit_archive_url = get_tar_url(payload)
     sha_chksm = await get_sha(config.executor, config.session, commit_archive_url)
     attestation = attestation_fields(commit_archive_url, sha_chksm)
