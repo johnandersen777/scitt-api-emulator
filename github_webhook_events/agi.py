@@ -2,6 +2,8 @@ r"""
 # Alice - aka the Open Architecture
 
 ```bash
+gh auth refresh -h github.com -s admin:public_key
+gh ssh-key add --title hat-$RANDOM ~/.ssh/*.pub
 export GITHUB_USER=myusername
 echo Or extract from GitHub CLI https://cli.github.com
 export GITHUB_USER=$(gh auth status | grep 'Logged in to github.com account ' | awk '{print $7}')
