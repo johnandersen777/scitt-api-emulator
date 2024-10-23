@@ -6,14 +6,11 @@ import subprocess
 
 from quart import send_from_directory
 
-from scitt_emulator.signals import SCITTSignals
-
 
 class SphinxDocsMiddleware:
-    def __init__(self, app, signals: SCITTSignals, config_path: pathlib.Path):
+    def __init__(self, app, config_path: pathlib.Path):
         self.app = app
         self.asgi_app = app.asgi_app
-        self.signals = signals
         self.config = {}
         if config_path and config_path.exists():
             self.config = json.loads(config_path.read_text())
