@@ -85,7 +85,7 @@ async def get_sha(executor, url):
         async with session.get(url) as resp:
             chunk = await resp.content.read(8192)
             loop = asyncio.get_event_loop()
-            chunk = await loop.run_in_executor(executor, sha384_instance.update, chunk)
+            chunk = await loop.run_in_executor(repoapp.config["executor"], sha384_instance.update, chunk)
             checksum = sha384_instance.hexdigest()
     return checksum
 
