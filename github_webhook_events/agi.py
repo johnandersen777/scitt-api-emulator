@@ -1,7 +1,14 @@
 r"""
 # Alice - aka the Open Architecture
 
-
+```bash
+export GITHUB_USER=myusername
+echo Or extract from GitHub CLI https://cli.github.com
+export GITHUB_USER=$(gh auth status | grep 'Logged in to github.com account ' | awk '{print $7}')
+echo On first run you have to run it twice
+ssh -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PasswordAuthentication=no $GITHUB_USER@localhost
+ssh -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PasswordAuthentication=no $GITHUB_USER@localhost
+```
 
 # Contributing
 
@@ -3249,9 +3256,12 @@ def make_argparse_parser(argv=None):
         "--openai-api-key",
         dest="openai_api_key",
         type=str,
-        default=KVStoreKeyring.keyring_get_password_or_return(
-            getpass.getuser(),
-            "openai.api.key",
+        default=os.environ.get(
+            "OPENAI_API_KEY",
+            KVStoreKeyring.keyring_get_password_or_return(
+                getpass.getuser(),
+                "openai.api.key",
+            ),
         ),
         help="OpenAI API Key",
     )

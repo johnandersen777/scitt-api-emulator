@@ -1,4 +1,4 @@
-# docker build -t alice-server -f alice.Dockerfile . && docker run --rm -ti -p 2222:22 alice-server
+# docker build -t alice-server -f alice.Dockerfile . && docker run --rm -ti -p 2222:22 -e OPENAI_API_KEY=$(python -m keyring get $USER openai.api.key) alice-server
 FROM registry.fedoraproject.org/fedora as client
 
 COPY ./entrypoint.sh /host/entrypoint.sh
@@ -29,9 +29,15 @@ RUN set -x \
   && echo 'AuthorizedPrincipalsCommand /usr/bin/curl -sfL https://github.com/%u.keys' | tee -a /etc/ssh/sshd_config \
   && echo 'AuthorizedPrincipalsCommandUser nobody' | tee -a /etc/ssh/sshd_config
 
-COPY locked-shell.sh /bin/
-COPY entrypoint-server.sh /host/
 COPY server_motd /host/
+
+COPY ./openai_assistant_instructions.md /host/
+COPY ./agi.py /host/
+
+RUN bash -xec "$(grep 'pip install' /host/agi.py | head -n 1)"
+
+COPY entrypoint-server.sh /host/
+COPY locked-shell.sh /bin/
 
 RUN set -x \
   && mkdir -pv /var/run/alice-server/ \

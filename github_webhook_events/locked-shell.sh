@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
-cat /host/server_motd
+if [ -n CALLER_PATH ]; then
+  export CALLER_PATH="/host"
+fi
 
-exec bash
+cat "${CALLER_PATH}/server_motd"
+
+trap bash EXIT
+
+python -u "${CALLER_PATH}/agi.py" --socket-path "/tmp/${USER}.sock"
+# TODO within python optionally after server connection established chmod 000 /tmp/$USER.sock
