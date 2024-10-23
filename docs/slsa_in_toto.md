@@ -26,6 +26,22 @@ Targets are new commits, branches, tags, and their CI/CD (status check) results
 
 [![asciicast-of-hash-of-tar-gz](https://asciinema.org/a/622103.svg)](https://asciinema.org/a/622103)
 
+```graphql
+query ($owner: String!, $repo: String!, $commit_colon_file_path: String!) {
+  repository(owner: $owner, name: $repo) {
+    object(expression: $commit_colon_file_path) {
+      ... on Blob {
+        oid
+      }
+    }
+  }
+}
+```
+
+```console
+$ gh api graphql --jq .data.repository.object.oid -F owner='scitt-community' -F repo='scitt-api-emulator' -F commit_colon_file_path="$(git log -n 1 --format=%H):setup.py" -F "query=@scitt_software_supply_chain_middleware/git_blob.graphql"
+```
+
 ```json
 {
   "_type": "https://in-toto.io/Statement/v1",
