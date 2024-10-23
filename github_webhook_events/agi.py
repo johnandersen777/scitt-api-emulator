@@ -3236,6 +3236,12 @@ def make_argparse_parser(argv=None):
         ),
         help="Handle to address the user as",
     )
+    parser.add_argument(
+        "--log",
+        dest="log",
+        default=logging.CRITICAL,
+        type=lambda value: getattr(logging, value.upper()),
+    )
     # TODO Integrate tmux stuff cleanly
     parser.add_argument(
         "--socket-path",
@@ -3370,6 +3376,8 @@ async def agent_openai(
     *,
     openai_base_url: Optional[str] = None,
 ):
+    # snoop().__enter__()
+
     client = openai.AsyncOpenAI(
         api_key=openai_api_key,
         base_url=openai_base_url,
@@ -3500,6 +3508,7 @@ async def agent_openai(
                         ),
                     )
                 elif result.action_type == AGIActionType.RUN_THREAD:
+                    snoop.pp(result)
                     run = await client.beta.threads.runs.create(
                         assistant_id=result.action_data.agent_id,
                         thread_id=result.action_data.thread_id,
@@ -3794,7 +3803,7 @@ async def DEBUG_TEMP_message_handler(user_name,
                 agent_event.event_data.message_content
             )
             proposed_workflow_contents = yaml.dump(
-                json.loads(workflow.model_dump_json()),
+                json.loads(response.workflow.model_dump_json()),
                 default_flow_style=False,
                 sort_keys=True,
             )
@@ -3804,7 +3813,7 @@ async def DEBUG_TEMP_message_handler(user_name,
                         inputs={},
                         context={},
                         stack={},
-                        workflow=workflow,
+                        workflow=response.workflow,
                     ).model_dump_json(),
                 )
             )
@@ -3836,12 +3845,16 @@ async def main(
     agi_name: str,
     kvstore_service_name: str,
     *,
+    log = None,
     kvstore: KVStore = None,
     action_stream: AGIActionStream = None,
     openai_api_key: str = None,
     openai_base_url: Optional[str] = None,
     pane: Optional[libtmux.Pane] = None,
 ):
+    if log is not None:
+        logging.basicConfig(level=log)
+
     if not kvstore:
         kvstore = KVStoreKeyring({"service_name": kvstore_service_name})
 
@@ -3859,6 +3872,8 @@ async def main(
             ),
         ),
     ]
+
+    previous_event_types = set()
 
     agents = AsyncioLockedCurrentlyDict()
     threads = AsyncioLockedCurrentlyDict()
@@ -3936,6 +3951,8 @@ async def main(
                 )
             snoop.pp(active_agent_currently_undefined, active_thread_currently_undefined)
             if work_name == "agent.events":
+                # Run actions which have are waiting for an event which was seen
+                previous_event_types.add(result.event_type)
                 work[
                     tg.create_task(
                         ignore_stopasynciteration(work_ctx.__anext__())
@@ -3962,12 +3979,12 @@ async def main(
                             ),
                         )
                     # Ready for child shell
-                    if os.environ.get("NO_SHELL", "1") != "1" and os.fork() == 0:
-                        cmd = [
-                            "bash",
-                        ]
-                        snoop.pp(cmd)
-                        # os.execvp(cmd[0], cmd)
+                    # if os.environ.get("NO_SHELL", "1") != "1" and os.fork() == 0:
+                    #     cmd = [
+                    #         "bash",
+                    #     ]
+                    #     snoop.pp(cmd)
+                    #     # os.execvp(cmd[0], cmd)
                     # tmux support
                     if pane is not None:
                         # TODO Combine into thread?
@@ -4117,19 +4134,6 @@ async def main(
                         agent_state = agents[agent_event.event_data.agent_id]
                     await DEBUG_TEMP_message_handler(user_name, agent_state, agent_event,
                                                      pane=pane)
-                # Run any actions which have been waiting for an event
-                still_waiting = []
-                while waiting:
-                    action_waiting_for_event, make_action = waiting.pop(0)
-                    if action_waiting_for_event == agent_event.event_type:
-                        await user_input_action_stream_queue.put(
-                            await make_action()
-                        )
-                    else:
-                        still_waiting.append(
-                            (action_waiting_for_event, make_action)
-                        )
-                waiting.extend(still_waiting)
             elif work_name == "user.unvalidated.input_action_stream":
                 work[
                     tg.create_task(
@@ -4150,6 +4154,39 @@ async def main(
                     continue
                 waiting.append(
                     (
+                        # OR is array, AND is dict values
+                        [
+                            AGIEventType.NEW_AGENT_CREATED,
+                            AGIEventType.EXISTING_AGENT_RETRIEVED,
+                        ],
+                        async_lambda(
+                            lambda: AGIAction(
+                                action_type=AGIActionType.NEW_THREAD,
+                                action_data=AGIActionNewThread(
+                                    agent_id=agents.currently.state_data.agent_id,
+                                ),
+                            ),
+                        )
+                    )
+                )
+                waiting.append(
+                    (
+                        AGIEventType.NEW_THREAD_CREATED,
+                        async_lambda(
+                            lambda: AGIAction(
+                                action_type=AGIActionType.ADD_MESSAGE,
+                                action_data=AGIActionAddMessage(
+                                    agent_id=agents.currently.state_data.agent_id,
+                                    thread_id=threads.currently.state_data.thread_id,
+                                    message_role="user",
+                                    message_content=user_input,
+                                ),
+                            )
+                        )
+                    )
+                )
+                waiting.append(
+                    (
                         AGIEventType.THREAD_MESSAGE_ADDED,
                         async_lambda(
                             lambda: AGIAction(
@@ -4162,72 +4199,32 @@ async def main(
                         ),
                     ),
                 )
-                # TODO Handle case where agent does not yet exist
-                """
-                async with agents:
-                    active_agent_currently_undefined = (
-                        agents.currently == CURRENTLY_UNDEFINED
+            # Run actions which have are waiting for an event which was seen
+            still_waiting = []
+            while waiting:
+                action_waiting_for_event, make_action = waiting.pop(0)
+                if (
+                    (
+                        not isinstance(action_waiting_for_event, (dict, list))
+                        and action_waiting_for_event in previous_event_types
+                    ) or (
+                        isinstance(action_waiting_for_event, list)
+                        and set(action_waiting_for_event).intersection(previous_event_types)
+                    ) or (
+                        isinstance(action_waiting_for_event, dict)
+                        and set(action_waiting_for_event.values()).issubset(previous_event_types)
                     )
-                if active_agent_currently_undefined:
-                    await tg.create_task(agents.currently_exists.wait())
-                """
-                if not active_agent_currently_undefined and active_thread_currently_undefined:
-                    async with agents:
-                        current_agent = agents.currently
-                    if not isinstance(user_input, AGIAction):
-                        waiting.append(
-                            (
-                                AGIEventType.NEW_THREAD_CREATED,
-                                async_lambda(
-                                    lambda: AGIAction(
-                                        action_type=AGIActionType.ADD_MESSAGE,
-                                        action_data=AGIActionAddMessage(
-                                            agent_id=agents.currently.state_data.agent_id,
-                                            thread_id=threads.currently.state_data.thread_id,
-                                            message_role="user",
-                                            message_content=user_input,
-                                        ),
-                                    )
-                                ),
-                            ),
-                        )
+                ):
                     await user_input_action_stream_queue.put(
-                        AGIAction(
-                            action_type=AGIActionType.NEW_THREAD,
-                            action_data=AGIActionNewThread(
-                                agent_id=current_agent.state_data.agent_id,
-                            ),
-                        ),
-                    )
-                elif active_agent_currently_undefined or active_thread_currently_undefined:
-                    waiting.append(
-                        (
-                            AGIEventType.NEW_THREAD_CREATED,
-                            async_lambda(
-                                lambda: AGIAction(
-                                    action_type=AGIActionType.ADD_MESSAGE,
-                                    action_data=AGIActionAddMessage(
-                                        agent_id=agents.currently.state_data.agent_id,
-                                        thread_id=threads.currently.state_data.thread_id,
-                                        message_role="user",
-                                        message_content=user_input,
-                                    ),
-                                )
-                            )
-                        )
+                        await make_action()
                     )
                 else:
-                    await user_input_action_stream_queue.put(
-                        AGIAction(
-                            action_type=AGIActionType.ADD_MESSAGE,
-                            action_data=AGIActionAddMessage(
-                                agent_id=agents.currently.state_data.agent_id,
-                                thread_id=threads.currently.state_data.thread_id,
-                                message_role="user",
-                                message_content=user_input,
-                            ),
-                        ),
+                    still_waiting.append(
+                        (action_waiting_for_event, make_action)
                     )
+            waiting.extend(still_waiting)
+            snoop.pp(waiting)
+            # TODO Support on-next-tick waiting again instead of ever seen
 
 
 import libtmux
@@ -4494,7 +4491,9 @@ def run_tmux_attach(socket_path, input_socket_path):
         input_socket_path,
         "--agi-name",
         # TODO Something secure here, scitt URN and lookup for PS1?
-        f"alice{str(uuid.uuid4()).split('-')[4]}"
+        f"alice{str(uuid.uuid4()).split('-')[4]}",
+        "--log",
+        "debug",
     ]
     with open(os.devnull, "w") as devnull:
         subprocess.Popen(
