@@ -4326,6 +4326,19 @@ async def tmux_test(*args, socket_path=None, **kwargs):
 
         # pane = libtmux.Pane.from_pane_id(pane_id=pane.cmd('split-window', '-P', '-F#{pane_id}').stdout[0], server=pane.server)
 
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/connect/{socket_stem}")
+async def connect(socket_stem: str):
+    parser = make_argparse_parser()
+    args = parser.parse_args(["--socket-path", f"/tmp/{socket_stem}.sock"])
+    asyncio.create_task(tmux_test(**vars(args)))
+    return {
+        "connected": True,
+    }
+
 
 if __name__ == "__main__":
     # TODO Hook each thread to a terminal context with tmux
