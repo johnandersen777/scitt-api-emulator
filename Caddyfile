@@ -1,3 +1,7 @@
 scitt.unstable.chadig.com {
   reverse_proxy http://localhost:8000
 }
+
+define.chadig.com {
+  respond "Cha-Dig: Statement of more stoked ya-dig. Example: Can you dig it? Chaaaaaaa I can dig it!!! -> CHAAAADIIIIIIG"
+}
