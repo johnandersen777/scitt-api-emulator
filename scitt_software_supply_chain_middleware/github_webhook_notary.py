@@ -40,20 +40,19 @@ class GitHubWebhookNotaryConfig:
 
 
 async def get_sha(executor, session, url):
+    loop = asyncio.get_event_loop()
     sha384_instance = hashlib.sha384()
-    async with session.get(url) as resp:
-        while chunk := await resp.content.read(2**16):
-            loop = asyncio.get_event_loop()
+    async with session.get(url, raise_for_status=True) as response:
+        while chunk := await response.content.read(2**16):
             chunk = await loop.run_in_executor(executor, sha384_instance.update, chunk)
-            checksum = sha384_instance.hexdigest()
-    return checksum
+    return sha384_instance.hexdigest()
 
 
 def get_tar_url(payload):
-    return f'https://github.com/{payload["repository"]["full_name"]}/archive/{payload["hash"]}.zip'
+    return f'https://github.com/{payload["repository"]["full_name"]}/archive/{payload["hash"]}.tar.gz'
 
 
-def attestation_fields(name, rd):
+def attestation_fields(name, sha_chksm):
     return {
         "_type": "https://in-toto.io/Statement/v1",
         "subject": [{"name": name, "digest": {"sha384": sha_chksm}}],
@@ -83,13 +82,13 @@ async def github_webhook_notary_post_route(
     payload = json.loads(await request.get_data())
     commit_archive_url = get_tar_url(payload)
     sha_chksm = await get_sha(config.executor, config.session, commit_archive_url)
-    rd = generate_resource_descriptor(sha_chksm, commit_archive_url)
-    attestation = attestation_fields(commit_archive_url, rd)
+    attestation = attestation_fields(commit_archive_url, sha_chksm)
 
     with tempfile.TemporaryDirectory() as tempdir:
         statement_path = pathlib.Path(tempdir, "statement.cose")
 
         create_statement(
+            statement_path,
             # TODO issuer=None means ephemeral key, can we sign with something
             # persistent to this instance that's exportable? Maybe add OIDC
             # routes to this blueprint and a key to the config for this
@@ -97,18 +96,20 @@ async def github_webhook_notary_post_route(
             None,
             f"repo:{org_name}/{repo_name}:type:slsa:artifact:tar.gz",
             "application/json",
-            attestation,
+            json.dumps(attestation, sort_keys=True),
             private_key_pem_path=None,
         )
 
-        await signals.federation.submit_claim.send_async(
+        statement_bytes = statement_path.read_bytes()
+
+        await config.signals.federation.submit_claim.send_async(
             current_app,
-            claim=statement_path.read_bytes(),
+            claim=statement_bytes,
         )
 
     return (
         jsonify({"status": "success"}),
-        400,
+        200,
     )
 
 
@@ -149,7 +150,7 @@ class GitHubWebhookNotaryMiddleware:
         if config_path and config_path.exists():
             self.config = json.loads(config_path.read_text())
 
-        GitHubWebbookNotary(self.app)
+        GitHubWebhookNotary(self.app)
 
     async def __call__(self, scope, receive, send):
         return await self.asgi_app(scope, receive, send)
