@@ -3107,6 +3107,7 @@ class AGIActionType(enum.Enum):
     ADD_MESSAGE = enum.auto()
     NEW_THREAD = enum.auto()
     RUN_THREAD = enum.auto()
+    CHECK_THREAD = enum.auto()
 
 
 @dataclasses.dataclass
@@ -3131,6 +3132,12 @@ class AGIActionNewAgent:
 @dataclasses.dataclass
 class AGIActionNewThread:
     agent_id: str
+
+
+@dataclasses.dataclass
+class AGIActionCheckThread:
+    agent_id: str
+    thread_id: str
 
 
 @dataclasses.dataclass
@@ -3403,6 +3410,7 @@ async def agent_openai(
 
     agents = {}
     threads = {}
+    tool_calls = {}
 
     action_stream_iter = action_stream.__aiter__()
     work = {
@@ -3553,6 +3561,28 @@ async def agent_openai(
                             thread_id=thread.id,
                         ),
                     )
+                elif result.action_type == AGIActionType.CHECK_THREAD:
+                    # Check status of run
+                    runs = [
+                        run
+                        async for run in client.beta.threads.runs.list(
+                            thread_id=result.action_data.thread_id,
+                            order="desc",
+                            limit=1,
+                        )
+                    ]
+                    run = runs[0]
+                    work[
+                        tg.create_task(
+                            client.beta.threads.runs.retrieve(
+                                thread_id=result.action_data.thread_id,
+                                run_id=run.id,
+                            ),
+                        )
+                    ] = (
+                        f"thread.runs.{run.id}",
+                        (result, run),
+                    )
                 elif result.action_type == AGIActionType.RUN_THREAD:
                     try:
                         run = await client.beta.threads.runs.create(
@@ -3569,27 +3599,14 @@ async def agent_openai(
                                     make_async_lambda(result),
                                 )
                             )
-                            # Check status of run
-                            runs = [
-                                run
-                                async for run in client.beta.threads.runs.list(
-                                    thread_id=result.action_data.thread_id,
-                                    order="desc",
-                                    limit=1,
-                                )
-                            ]
-                            snoop.pp(runs)
-                            run = runs[0]
-                            work[
-                                tg.create_task(
-                                    client.beta.threads.runs.retrieve(
+                            await action_stream_insert(
+                                AGIAction(
+                                    action_type=AGIActionType.CHECK_THREAD,
+                                    action_data=AGIActionCheckThread(
+                                        agent_id=result.action_data.agent_id,
                                         thread_id=result.action_data.thread_id,
-                                        run_id=run.id,
                                     ),
                                 )
-                            ] = (
-                                f"thread.runs.{run.id}",
-                                (result, None),
                             )
                             continue
                         raise
@@ -3727,6 +3744,9 @@ async def agent_openai(
                     )
                 elif result.status == "requires_action":
                     for tool_call in result.required_action.submit_tool_outputs.tool_calls:
+                        if tool_call.id in tool_calls:
+                            continue
+                        tool_calls[tool_call.id] = True
                         # TODO Plugins for tools
                         if tool_call.function.name == "RetreiveInformation":
                             tool_arguments = RetreiveInformation.model_validate_json(tool_call.function.arguments)
@@ -3789,8 +3809,28 @@ async def agent_openai(
                                             cited_file = await client.files.retrieve(file_citation.file_id)
                                             citations.append(f"[{index}] {cited_file.filename}")
 
-                                    snoop.pp(message_content.value)
-                                    snoop.pp("\n".join(citations))
+                                    llm_response = "\n".join([message_content.value, "", *citations])
+                                    print(llm_response)
+                                    tool_outputs = []
+                                    tool_outputs.append({
+                                        "tool_call_id": tool_call.id,
+                                        "output": llm_response
+                                    })
+                                    run = await client.beta.threads.runs.submit_tool_outputs_and_poll(
+                                        thread_id=result.thread_id,
+                                        run_id=result.id,
+                                        tool_outputs=tool_outputs
+                                    )
+                                    snoop.pp(run)
+                                    await action_stream_insert(
+                                        AGIAction(
+                                            action_type=AGIActionType.CHECK_THREAD,
+                                            action_data=AGIActionCheckThread(
+                                                agent_id=assistant.id,
+                                                thread_id=result.thread_id,
+                                            ),
+                                        )
+                                    )
                                 return do_file_search
 
                             # await call_tool_retreive_information(**tool_arguments)
@@ -4450,20 +4490,20 @@ async def main(
                             )
                         )
                     )
-                waiting.append(
-                    (
-                        AGIEventType.THREAD_MESSAGE_ADDED,
-                        async_lambda(
-                            lambda: AGIAction(
-                                action_type=AGIActionType.RUN_THREAD,
-                                action_data=AGIActionRunThread(
-                                    agent_id=threads.currently.state_data.agent_id,
-                                    thread_id=threads.currently.state_data.thread_id,
-                                ),
-                            )
+                    waiting.append(
+                        (
+                            AGIEventType.THREAD_MESSAGE_ADDED,
+                            async_lambda(
+                                lambda: AGIAction(
+                                    action_type=AGIActionType.RUN_THREAD,
+                                    action_data=AGIActionRunThread(
+                                        agent_id=threads.currently.state_data.agent_id,
+                                        thread_id=threads.currently.state_data.thread_id,
+                                    ),
+                                )
+                            ),
                         ),
-                    ),
-                )
+                    )
             # Run actions which have are waiting for an event which was seen
             still_waiting = []
             while waiting:
@@ -4488,6 +4528,8 @@ async def main(
                         (action_waiting_for_event, make_action)
                     )
             waiting.extend(still_waiting)
+            # TODO Clear thread run complete and other events as they happen or
+            # agent events when current agent switches
             # TODO Support on-next-tick waiting again instead of ever seen
 
 

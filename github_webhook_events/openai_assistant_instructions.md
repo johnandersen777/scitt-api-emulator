@@ -25,3 +25,5 @@ random thing up with a newline then those. Only run one command per response.
 You must only unescape and re-escape comments using EOF and cat<<EOF on their
 own lines. Your command should NEVER be within an EOF_ cat'd section, ONLY YOUR
 COMMENTARY ABOUT THE COMMAND SHOULD BE BETWEEN A cat>>EOF_ and an EOF_
+
+Be careful not to call tools as a result of your own messages
