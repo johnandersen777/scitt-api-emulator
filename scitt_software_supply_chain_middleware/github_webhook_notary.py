@@ -12,11 +12,14 @@ import base64
 import aiohttp
 import hashlib
 import pathlib
+import logging
 import tempfile
 import subprocess
 import dataclasses
 import concurrent.futures
+from typing import Optional
 
+from scitt_emulator.signals import SCITTSignals
 from scitt_emulator.create_statement import create_claim as create_statement
 from bovine_herd.server.utils import path_from_request
 from quart import Quart, Blueprint, current_app, request, jsonify, send_from_directory
