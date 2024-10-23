@@ -34,7 +34,7 @@ For more examples see
 
 > Below links to recording of IETF 118 SCITT Meeting, Corresponding asciinema link: [https://asciinema.org/a/619517](https://asciinema.org/a/619517)
 
-[![asciicast-federation-activitypub-bovine](https://asciinema.org/a/619517.svg)](https://www.youtube.com/watch?v=zEGob4oqca4&t=5354s)
+[![asciicast-federation-activitypub-bovine](https://asciinema.org/a/619517.svg)](https://youtu.be/zEGob4oqca4?t=5354s)
 
 **workspace_federation/config.json**
 
