@@ -5,7 +5,7 @@ set -xeuo pipefail
 echo "Current date: $(date)"
 git log -n 1
 
-pip install --force-reinstall --no-cache -r requirements.txt
+pip install --force-reinstall --no-cache -r requirements.txt -e .
 
 rm -rf workspace/ federation_workspace/
 
@@ -26,8 +26,11 @@ scitt-emulator server \
   --port "${PORT}" \
   --workspace workspace/ \
   --middleware \
-    sphinx_docs_middleware:SphinxDocsMiddleware \
+    scitt_software_supply_chain_middleware.sphinx_docs_middleware:SphinxDocsMiddleware \
     scitt_emulator.federation_activitypub_bovine:SCITTFederationActivityPubBovine \
   --middleware-config-path \
     - \
     federation_workspace/config.json
+
+#     scitt_software_supply_chain_middleware.github_webhook_notary:GitHubWebhookNotaryMiddleware \
+#     - \
