@@ -3893,6 +3893,11 @@ async def main(
             ),
         }
         async for (work_name, work_ctx), result in concurrently(work):
+            error = None
+            # with contextlib.suppress(Exception):
+            error = result.exception()
+            if error is not None:
+                raise error
             if result is STOP_ASYNC_ITERATION:
                 continue
             if work_name == "agent.events":
@@ -3921,62 +3926,63 @@ async def main(
                                 agent_id=agent_event.event_data.agent_id,
                             ),
                         )
-                    # Ready for child shell
-                    if os.fork() == 0:
-                        cmd = [
-                            "bash",
-                        ]
-                        os.execvp(cmd[0], cmd)
-                    # tmux support
-                    if pane is not None:
-                        # TODO Combine into thread?
-                        # threading.Thread(target=a_shell_for_a_ghost_send_keys,
-                        #                  args=[pane, motd_string, 1]).run()
-                        tempdir = pathlib.Path(pane.window.session.show_environment()[f"{agi_name}_INPUT"]).parent
-                        pane.send_keys(f'', enter=True)
-                        pane.send_keys('if [ "x${CALLER_PATH}" = "x" ]; then export CALLER_PATH="' + str(tempdir) + '"; fi', enter=True)
+                    with snoop():
+                        # Ready for child shell
+                        if os.fork() == 0:
+                            cmd = [
+                                "bash",
+                            ]
+                            os.execvp(cmd[0], cmd)
+                        # tmux support
+                        if pane is not None:
+                            # TODO Combine into thread?
+                            # threading.Thread(target=a_shell_for_a_ghost_send_keys,
+                            #                  args=[pane, motd_string, 1]).run()
+                            tempdir = pathlib.Path(pane.window.session.show_environment()[f"{agi_name}_INPUT"]).parent
+                            pane.send_keys(f'', enter=True)
+                            pane.send_keys('if [ "x${CALLER_PATH}" = "x" ]; then export CALLER_PATH="' + str(tempdir) + '"; fi', enter=True)
 
-                        pane.send_keys(f'', enter=True)
-                        pane.send_keys("source ${CALLER_PATH}/util.sh", enter=True)
-                        pane.send_keys(
-                            textwrap.dedent(
-                                '''
-                                if [ ! -f "${CALLER_PATH}/policy_engine.logs.txt" ]; then
-                                    NO_CELERY=1 python -u ${CALLER_PATH}/policy_engine.py api --bind 127.0.0.1:0 --workers 1 1>"${CALLER_PATH}/policy_engine.logs.txt" 2>&1 &
-                                    POLICY_ENGINE_PID=$!
+                            pane.send_keys(f'', enter=True)
+                            pane.send_keys("source ${CALLER_PATH}/util.sh", enter=True)
+                            pane.send_keys(
+                                textwrap.dedent(
+                                    '''
+                                    if [ ! -f "${CALLER_PATH}/policy_engine.logs.txt" ]; then
+                                        NO_CELERY=1 python -u ${CALLER_PATH}/policy_engine.py api --bind 127.0.0.1:0 --workers 1 1>"${CALLER_PATH}/policy_engine.logs.txt" 2>&1 &
+                                        POLICY_ENGINE_PID=$!
 
-                                    until find_listening_ports "$POLICY_ENGINE_PID"; do sleep 0.01; done
+                                        until find_listening_ports "$POLICY_ENGINE_PID"; do sleep 0.01; done
 
-                                    export POLICY_ENGINE_PORT=$(find_listening_ports "$POLICY_ENGINE_PID")
+                                        export POLICY_ENGINE_PORT=$(find_listening_ports "$POLICY_ENGINE_PID")
 
-                                    echo "${POLICY_ENGINE_PORT}" > "${CALLER_PATH}/policy_engine_port.txt"
-                                fi
-                                '''.lstrip(),
-                            ),
-                            enter=True,
-                        )
-                        pane.send_keys('if [ ! -f "${CALLER_PATH}/policy_engine.logs.txt" ]; then NO_CELERY=1 python -u ${CALLER_PATH}/policy_engine.py api --workers 1 1>"${CALLER_PATH}/policy_engine.logs.txt" 2>&1 & fi', enter=True)
-                        pane.send_keys(f'', enter=True)
+                                        echo "${POLICY_ENGINE_PORT}" > "${CALLER_PATH}/policy_engine_port.txt"
+                                    fi
+                                    '''.lstrip(),
+                                ),
+                                enter=True,
+                            )
+                            pane.send_keys('if [ ! -f "${CALLER_PATH}/policy_engine.logs.txt" ]; then NO_CELERY=1 python -u ${CALLER_PATH}/policy_engine.py api --workers 1 1>"${CALLER_PATH}/policy_engine.logs.txt" 2>&1 & fi', enter=True)
+                            pane.send_keys(f'', enter=True)
 
-                        # pane.send_keys(f'cat >>EOF', enter=True)
-                        # a_shell_for_a_ghost_send_keys(pane, motd_string, erase_after=1)
-                        # pane.send_keys(f'EOF', enter=True)
-                        # pane.send_keys(f'', enter=True)
+                            # pane.send_keys(f'cat >>EOF', enter=True)
+                            # a_shell_for_a_ghost_send_keys(pane, motd_string, erase_after=1)
+                            # pane.send_keys(f'EOF', enter=True)
+                            # pane.send_keys(f'', enter=True)
 
-                        pane.send_keys(f'export {agi_name.upper()}_INPUT="' + '${CALLER_PATH}/input.txt"', enter=True)
-                        pane.send_keys(f'export {agi_name.upper()}_INPUT_LAST_LINE="' + '${CALLER_PATH}/input-last-line.txt"', enter=True)
+                            pane.send_keys(f'export {agi_name.upper()}_INPUT="' + '${CALLER_PATH}/input.txt"', enter=True)
+                            pane.send_keys(f'export {agi_name.upper()}_INPUT_LAST_LINE="' + '${CALLER_PATH}/input-last-line.txt"', enter=True)
 
-                        # pane.send_keys(f'cat >>EOF', enter=True)
-                        success_string = "echo \"${PS1} $ We\'re in... awaiting instructions at $" + agi_name.upper() + "_INPUT\""
-                        # a_shell_for_a_ghost_send_keys(pane, success_string, erase_after=4.2)
-                        a_shell_for_a_ghost_send_keys(pane, success_string)
-                        pane.send_keys(f'', enter=True)
-                        a_shell_for_a_ghost_send_keys(pane, "echo ${PS1}" + motd_string)
-                        pane.send_keys(f'', enter=True)
-                        # pane.send_keys(f'EOF', enter=True)
-                        # pane.send_keys(f'', enter=True)
+                            # pane.send_keys(f'cat >>EOF', enter=True)
+                            success_string = "echo \"${PS1} $ We\'re in... awaiting instructions at $" + agi_name.upper() + "_INPUT\""
+                            # a_shell_for_a_ghost_send_keys(pane, success_string, erase_after=4.2)
+                            a_shell_for_a_ghost_send_keys(pane, success_string)
+                            pane.send_keys(f'', enter=True)
+                            a_shell_for_a_ghost_send_keys(pane, "echo ${PS1}" + motd_string)
+                            pane.send_keys(f'', enter=True)
+                            # pane.send_keys(f'EOF', enter=True)
+                            # pane.send_keys(f'', enter=True)
 
-                        pane.send_keys(f'ls -lAF ${agi_name.upper()}_INPUT', enter=True)
+                            pane.send_keys(f'ls -lAF ${agi_name.upper()}_INPUT', enter=True)
                 elif agent_event.event_type == AGIEventType.NEW_THREAD_CREATED:
                     async with threads:
                         threads[agent_event.event_data.thread_id] = AGIState(
@@ -4291,16 +4297,6 @@ async def tmux_test(*args, socket_path=None, **kwargs):
                 """
             ).lstrip()
             + pathlib.Path(__file__).parent.joinpath("entrypoint.sh").read_text()
-            + textwrap.dedent(
-                r"""
-
-                # NO_CELERY=1 python -u "${CALLER_PATH}/policy_engine.py" api --workers 1 1>"${CALLER_PATH}/policy_engine.logs.txt" 2>&1 &
-
-                # clear
-
-                bash
-                """
-            ).lstrip()
             + "\nWRITE_OUT_SH_EOF",
             enter=True
         )
@@ -4326,15 +4322,29 @@ async def tmux_test(*args, socket_path=None, **kwargs):
 
         # pane = libtmux.Pane.from_pane_id(pane_id=pane.cmd('split-window', '-P', '-F#{pane_id}').stdout[0], server=pane.server)
 
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
 
 app = FastAPI()
 
+@snoop
+def run_tmux_attach(socket_path):
+    cmd = [
+        sys.executable,
+        "-u",
+        str(pathlib.Path(__file__).resolve()),
+        "--socket-path",
+        socket_path,
+    ]
+    subprocess.run(cmd)
+
+
 @app.get("/connect/{socket_stem}")
-async def connect(socket_stem: str):
-    parser = make_argparse_parser()
-    args = parser.parse_args(["--socket-path", f"/tmp/{socket_stem}.sock"])
-    asyncio.create_task(tmux_test(**vars(args)))
+async def connect(socket_stem: str, background_tasks: BackgroundTasks):
+    background_tasks.add_task(run_tmux_attach, f"/tmp/{socket_stem}.sock")
+    # parser = make_argparse_parser()
+    # args = parser.parse_args(["--socket-path", f"/tmp/{socket_stem}.sock"])
+    # task = asyncio.create_task(tmux_test(**vars(args)))
+    # await task
     return {
         "connected": True,
     }
