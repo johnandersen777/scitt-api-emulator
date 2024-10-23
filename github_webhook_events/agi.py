@@ -28,11 +28,18 @@ def async_lambda(func):
     return async_func
 
 
+async def asyncio_sleep_for_then_coro(sleep_time, coro):
+    await asyncio.sleep(sleep_time)
+    return await coro
+
+
 class AGIEventType(enum.Enum):
+    ERROR = enum.auto()
     END_EVENTS = enum.auto()
     INTERNAL_RE_QUEUE = enum.auto()
     NEW_AGENT_CREATED = enum.auto()
     EXISTING_AGENT_RETRIEVED = enum.auto()
+    NEW_FILE_ADDED = enum.auto()
     NEW_THREAD_CREATED = enum.auto()
     NEW_THREAD_RUN_CREATED = enum.auto()
     NEW_THREAD_MESSAGE = enum.auto()
@@ -52,6 +59,12 @@ class AGIEvent:
 class AGIEventNewAgent:
     agent_id: str
     agent_name: str
+
+
+@dataclasses.dataclass
+class AGIEventNewFileAdded:
+    agent_id: str
+    file_id: str
 
 
 @dataclasses.dataclass
@@ -392,100 +405,127 @@ async def agent_openai(
         print(f"openai_agent.{work_name}", pprint.pformat(result))
         if result is STOP_ASYNC_ITERATION:
             continue
-        # TODO There should be no await's here, always add to work
-        if work_name == "action_stream":
-            work[
-                tg.create_task(ignore_stopasynciteration(work_ctx.__anext__()))
-            ] = (work_name, work_ctx)
-            if result.action_type == AGIActionType.NEW_AGENT:
-                assistant = None
-                if result.action_data.agent_id:
-                    with contextlib.suppress(openai.NotFoundError):
-                        assistant = await client.beta.assistants.retrieve(
-                            assistant_id=result.action_data.agent_id,
+        try:
+            # TODO There should be no await's here, always add to work
+            if work_name == "action_stream":
+                work[
+                    tg.create_task(
+                        ignore_stopasynciteration(work_ctx.__anext__())
+                    )
+                ] = (work_name, work_ctx)
+                if result.action_type == AGIActionType.NEW_AGENT:
+                    assistant = None
+                    if result.action_data.agent_id:
+                        with contextlib.suppress(openai.NotFoundError):
+                            assistant = await client.beta.assistants.retrieve(
+                                assistant_id=result.action_data.agent_id,
+                            )
+                            yield AGIEvent(
+                                event_type=AGIEventType.EXISTING_AGENT_RETRIEVED,
+                                event_data=AGIEventNewAgent(
+                                    agent_id=assistant.id,
+                                    agent_name=result.action_data.agent_name,
+                                ),
+                            )
+                    if not assistant:
+                        assistant = await client.beta.assistants.create(
+                            name=result.action_data.agent_name,
+                            instructions=result.action_data.agent_instructions,
+                            # model="gpt-4-1106-preview",
+                            model=await kvstore.get(
+                                f"openai.assistants.{agi_name}.model",
+                                "gpt-3.5-turbo-1106",
+                            ),
+                            tools=[{"type": "retrieval"}],
+                            # file_ids=[file.id],
                         )
                         yield AGIEvent(
-                            event_type=AGIEventType.EXISTING_AGENT_RETRIEVED,
+                            event_type=AGIEventType.NEW_AGENT_CREATED,
                             event_data=AGIEventNewAgent(
                                 agent_id=assistant.id,
                                 agent_name=result.action_data.agent_name,
                             ),
                         )
-                if not assistant:
-                    assistant = await client.beta.assistants.create(
-                        name=result.action_data.agent_name,
-                        instructions=result.action_data.agent_instructions,
-                        # model="gpt-4-1106-preview",
-                        model=await kvstore.get(
-                            f"openai.assistants.{agi_name}.model",
-                            "gpt-3.5-turbo-1106",
-                        ),
-                        tools=[{"type": "retrieval"}],
-                        # file_ids=[file.id],
-                    )
-                    yield AGIEvent(
-                        event_type=AGIEventType.NEW_AGENT_CREATED,
-                        event_data=AGIEventNewAgent(
-                            agent_id=assistant.id,
-                            agent_name=result.action_data.agent_name,
-                        ),
-                    )
-                agents[assistant.id] = assistant
-            elif result.action_type == AGIActionType.INGEST_FILE:
-                # TODO aiofile and tg.create_task
-                with open(result.action_data.file_path, "rb") as fileobj:
-                    file = await client.files.create(
-                        file=fileobj,
-                        purpose="assistants",
-                    )
-                await openai.resources.beta.assistants.AsyncAssistants(
-                    client
-                ).update(
-                    assistant_id=result.action_data.agent_id,
-                    file_ids=agents[result.action_data.agent_id].file_ids
-                    + [file.id],
-                )
-            elif result.action_type == AGIActionType.NEW_THREAD:
-                thread = await client.beta.threads.create()
-                yield AGIEvent(
-                    event_type=AGIEventType.NEW_THREAD_CREATED,
-                    event_data=AGIEventNewThreadCreated(
-                        agent_id=result.action_data.agent_id,
-                        thread_id=thread.id,
-                    ),
-                )
-            elif result.action_type == AGIActionType.RUN_THREAD:
-                run = await client.beta.threads.runs.create(
-                    assistant_id=result.action_data.agent_id,
-                    thread_id=result.action_data.thread_id,
-                )
-                yield AGIEvent(
-                    event_type=AGIEventType.NEW_THREAD_RUN_CREATED,
-                    event_data=AGIEventNewThreadRunCreated(
-                        agent_id=result.action_data.agent_id,
-                        thread_id=result.action_data.thread_id,
-                        run_id=run.id,
-                        run_status=run.status,
-                    ),
-                )
-                work[
-                    tg.create_task(
-                        client.beta.threads.runs.retrieve(
-                            thread_id=run.thread_id, run_id=run.id
+                    agents[assistant.id] = assistant
+                elif result.action_type == AGIActionType.INGEST_FILE:
+                    # TODO aiofile and tg.create_task
+                    with open(result.action_data.file_path, "rb") as fileobj:
+                        file = await client.files.create(
+                            file=fileobj,
+                            purpose="assistants",
+                        )
+                    file_ids = agents[result.action_data.agent_id].file_ids + [
+                        file.id
+                    ]
+                    """
+                    non_existant_file_ids = []
+                    for file_id in file_ids:
+                        try:
+                            file = await openai.resources.beta.assistants.AsyncFiles(
+                                client
+                            ).retrieve(file_id, assistant_id=result.action_data.agent_id)
+                        except openai.NotFoundError:
+                            non_existant_file_ids.append(file_id)
+                    for file_id in non_existant_file_ids:
+                        file_ids.remove(file_id)
+                    print("non_existant_file_ids", non_existant_file_ids, file_ids)
+                    """
+                    assistant = (
+                        await openai.resources.beta.assistants.AsyncAssistants(
+                            client
+                        ).update(
+                            assistant_id=result.action_data.agent_id,
+                            file_ids=file_ids,
                         )
                     )
-                ] = (
-                    f"thread.runs.{run.id}",
-                    run,
-                )
-            elif result.action_type == AGIActionType.ADD_MESSAGE:
-                try:
+                    print("AsyncAssistants.update()", pprint.pformat(assistant))
+                    yield AGIEvent(
+                        event_type=AGIEventType.NEW_FILE_ADDED,
+                        event_data=AGIEventNewFileAdded(
+                            agent_id=result.action_data.agent_id,
+                            file_id=file.id,
+                        ),
+                    )
+                elif result.action_type == AGIActionType.NEW_THREAD:
+                    thread = await client.beta.threads.create()
+                    yield AGIEvent(
+                        event_type=AGIEventType.NEW_THREAD_CREATED,
+                        event_data=AGIEventNewThreadCreated(
+                            agent_id=result.action_data.agent_id,
+                            thread_id=thread.id,
+                        ),
+                    )
+                elif result.action_type == AGIActionType.RUN_THREAD:
+                    run = await client.beta.threads.runs.create(
+                        assistant_id=result.action_data.agent_id,
+                        thread_id=result.action_data.thread_id,
+                    )
+                    yield AGIEvent(
+                        event_type=AGIEventType.NEW_THREAD_RUN_CREATED,
+                        event_data=AGIEventNewThreadRunCreated(
+                            agent_id=result.action_data.agent_id,
+                            thread_id=result.action_data.thread_id,
+                            run_id=run.id,
+                            run_status=run.status,
+                        ),
+                    )
+                    work[
+                        tg.create_task(
+                            client.beta.threads.runs.retrieve(
+                                thread_id=run.thread_id, run_id=run.id
+                            )
+                        )
+                    ] = (
+                        f"thread.runs.{run.id}",
+                        (result, run),
+                    )
+                elif result.action_type == AGIActionType.ADD_MESSAGE:
                     message = await client.beta.threads.messages.create(
                         thread_id=result.action_data.thread_id,
                         role=result.action_data.message_role,
                         content=result.action_data.message_content,
                     )
-                    a = AGIEvent(
+                    yield AGIEvent(
                         event_type=AGIEventType.THREAD_MESSAGE_ADDED,
                         event_data=AGIEventThreadMessageAdded(
                             agent_id=result.action_data.agent_id,
@@ -495,84 +535,94 @@ async def agent_openai(
                             message_content=result.action_data.message_content,
                         ),
                     )
-                except:
-                    traceback.print_exc()
-                    raise
-                yield a
-        elif work_name.startswith("thread.runs."):
-            if result.status == "completed":
-                yield AGIEvent(
-                    event_type=AGIEventType.THREAD_RUN_COMPLETE,
-                    event_data=AGIEventThreadRunComplete(
-                        agent_id=result.assistant_id,
-                        thread_id=result.thread_id,
-                        run_id=result.id,
-                        run_status=result.status,
-                    ),
-                )
-                # TODO Send this similar to seed back to a feedback queue to
-                # process as an action for get thread messages
-                thread_messages = client.beta.threads.messages.list(
-                    thread_id=result.thread_id,
-                )
-                thread_messages_iter = thread_messages.__aiter__()
-                work[
-                    tg.create_task(
-                        ignore_stopasynciteration(
-                            thread_messages_iter.__anext__()
-                        )
-                    )
-                ] = (
-                    f"thread.messages.{result.thread_id}",
-                    thread_messages_iter,
-                )
-            elif result.status == "in_progress":
-                yield AGIEvent(
-                    event_type=AGIEventType.THREAD_RUN_IN_PROGRESS,
-                    event_data=AGIEventThreadRunInProgress(
-                        agent_id=result.assistant_id,
-                        thread_id=result.thread_id,
-                        run_id=result.id,
-                        run_status=result.status,
-                    ),
-                )
-                work[
-                    tg.create_task(
-                        client.beta.threads.runs.retrieve(
-                            thread_id=result.thread_id, run_id=result.id
-                        )
-                    )
-                ] = (
-                    f"thread.runs.{run.id}",
-                    result,
-                )
-            else:
-                yield AGIEvent(
-                    event_type=AGIEventType.THREAD_RUN_EVENT_WITH_UNKNOWN_STATUS,
-                    event_data=AGIEventThreadRunEventWithUnknwonStatus(
-                        agent_id=result.assistant_id,
-                        thread_id=result.thread_id,
-                        run_id=result.id,
-                        status=result.status,
-                    ),
-                )
-        elif work_name.startswith("thread.messages."):
-            _, _, thread_id = work_name.split(".", maxsplit=3)
-            work[
-                tg.create_task(ignore_stopasynciteration(work_ctx.__anext__()))
-            ] = (work_name, work_ctx)
-            for content in result.content:
-                if content.type == "text":
+            elif work_name.startswith("thread.runs."):
+                action_new_thread_run, _old_run = work_ctx
+                if result.status == "completed":
                     yield AGIEvent(
-                        event_type=AGIEventType.NEW_THREAD_MESSAGE,
-                        event_data=AGIEventNewThreadMessage(
-                            agent_id=result.assistant_id,
+                        event_type=AGIEventType.THREAD_RUN_COMPLETE,
+                        event_data=AGIEventThreadRunComplete(
+                            agent_id=action_new_thread_run.action_data.agent_id,
                             thread_id=result.thread_id,
-                            message_role=result.role,
-                            message_content_type=content.type,
-                            message_content=content.text.value,
+                            run_id=result.id,
+                            run_status=result.status,
                         ),
                     )
+                    # TODO Send this similar to seed back to a feedback queue to
+                    # process as an action for get thread messages
+                    thread_messages = client.beta.threads.messages.list(
+                        thread_id=result.thread_id,
+                    )
+                    thread_messages_iter = thread_messages.__aiter__()
+                    work[
+                        tg.create_task(
+                            ignore_stopasynciteration(
+                                thread_messages_iter.__anext__()
+                            )
+                        )
+                    ] = (
+                        f"thread.messages.{result.thread_id}",
+                        (action_new_thread_run, thread_messages_iter),
+                    )
+                elif result.status in ("queued", "in_progress"):
+                    yield AGIEvent(
+                        event_type=AGIEventType.THREAD_RUN_IN_PROGRESS,
+                        event_data=AGIEventThreadRunInProgress(
+                            agent_id=action_new_thread_run.action_data.agent_id,
+                            thread_id=result.thread_id,
+                            run_id=result.id,
+                            run_status=result.status,
+                        ),
+                    )
+                    work[
+                        tg.create_task(
+                            asyncio_sleep_for_then_coro(
+                                10,
+                                client.beta.threads.runs.retrieve(
+                                    thread_id=result.thread_id, run_id=result.id
+                                ),
+                            )
+                        )
+                    ] = (
+                        f"thread.runs.{run.id}",
+                        (action_new_thread_run, result),
+                    )
+                else:
+                    yield AGIEvent(
+                        event_type=AGIEventType.THREAD_RUN_EVENT_WITH_UNKNOWN_STATUS,
+                        event_data=AGIEventThreadRunEventWithUnknwonStatus(
+                            agent_id=action_new_thread_run.action_data.agent_id,
+                            thread_id=result.thread_id,
+                            run_id=result.id,
+                            status=result.status,
+                        ),
+                    )
+            elif work_name.startswith("thread.messages."):
+                action_new_thread_run, thread_messages_iter = work_ctx
+                _, _, thread_id = work_name.split(".", maxsplit=3)
+                # The zeroith index is the most recent response
+                """
+                work[
+                    tg.create_task(ignore_stopasynciteration(thread_messages_iter.__anext__()))
+                ] = (work_name, work_ctx)
+                """
+                for content in result.content:
+                    if content.type == "text":
+                        yield AGIEvent(
+                            event_type=AGIEventType.NEW_THREAD_MESSAGE,
+                            event_data=AGIEventNewThreadMessage(
+                                agent_id=action_new_thread_run.action_data.agent_id,
+                                thread_id=result.thread_id,
+                                message_role=result.role,
+                                message_content_type=content.type,
+                                message_content=content.text.value,
+                            ),
+                        )
+        except:
+            traceback.print_exc()
+            yield AGIEvent(
+                event_type=AGIEventType.ERROR,
+                event_data=traceback.format_exc(),
+            )
 
     yield AGIEvent(
         event_type=AGIEventType.END_EVENTS,
@@ -761,11 +811,13 @@ async def main(
                             ),
                         )
                     async with agents:
+                        """
                         agents[
                             agent_event.event_data.agent_id
                         ].state_data.thread_ids.append(
                             agent_event.event_data.thread_id
                         )
+                        """
                         print(agents[agent_event.event_data.agent_id])
                 elif (
                     agent_event.event_type
@@ -800,12 +852,14 @@ async def main(
                         print(threads[agent_event.event_data.thread_id])
                     async with agents:
                         print(agents[agent_event.event_data.agent_id])
+                        """
                         agents[
                             agent_event.event_data.agent_id
                         ].state_data.thread_ids.remove(
                             agent_event.event_data.thread_id
                         )
                         print(agents[agent_event.event_data.agent_id])
+                        """
                 elif agent_event.event_type == AGIEventType.NEW_THREAD_MESSAGE:
                     async with agents:
                         agent_state = agents[agent_event.event_data.agent_id]
@@ -816,11 +870,18 @@ async def main(
                         )
                         print(f"{user_name}: ", end="\r")
                 # Run any actions which have been waiting for an event
-                for action_waiting_for_event, make_action in waiting:
+                still_waiting = []
+                while waiting:
+                    action_waiting_for_event, make_action = waiting.pop(0)
                     if action_waiting_for_event == agent_event.event_type:
                         await user_input_action_stream_queue.put(
                             await make_action()
                         )
+                    else:
+                        still_waiting.append(
+                            (action_waiting_for_event, make_action)
+                        )
+                waiting.extend(still_waiting)
             elif work_name == "user.unvalidated.input_action_stream":
                 work[
                     tg.create_task(
@@ -828,6 +889,17 @@ async def main(
                     )
                 ] = (work_name, work_ctx)
                 user_input = result
+                if pathlib.Path(user_input).is_file():
+                    await user_input_action_stream_queue.put(
+                        AGIAction(
+                            action_type=AGIActionType.INGEST_FILE,
+                            action_data=AGIActionIngestFile(
+                                agent_id=agents.currently.state_data.agent_id,
+                                file_path=user_input,
+                            ),
+                        ),
+                    )
+                    continue
                 waiting.append(
                     (
                         AGIEventType.THREAD_MESSAGE_ADDED,
@@ -851,16 +923,6 @@ async def main(
                 if active_agent_currently_undefined:
                     await tg.create_task(agents.currently_exists.wait())
                 """
-                if pathlib.Path(user_input).is_file():
-                    await user_input_action_stream_queue.put(
-                        AGIAction(
-                            action_type=AGIActionType.INGEST_FILE,
-                            action_data=AGIActionIngestFile(
-                                agent_id=agents.currently.state_data.agent_id,
-                                file_path=user_input,
-                            ),
-                        ),
-                    )
                 async with threads:
                     active_thread_currently_undefined = (
                         threads.currently == CURRENTLY_UNDEFINED
