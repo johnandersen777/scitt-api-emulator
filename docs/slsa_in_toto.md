@@ -40,6 +40,7 @@ query ($owner: String!, $repo: String!, $commit_colon_file_path: String!) {
 
 ```console
 $ gh api graphql --jq .data.repository.object.oid -F owner='scitt-community' -F repo='scitt-api-emulator' -F commit_colon_file_path="$(git log -n 1 --format=%H):setup.py" -F "query=@scitt_software_supply_chain_middleware/git_blob.graphql"
+$ git rev-parse "$(git log -n 1 --format=%H):setup.py"
 ```
 
 From in-toto example:
