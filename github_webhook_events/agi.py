@@ -20,6 +20,8 @@ import keyring
 
 
 class AGIEventType(enum.Enum):
+    END_EVENTS = enum.auto()
+    INTERNAL_RE_QUEUE = enum.auto()
     NEW_AGENT_CREATED = enum.auto()
     EXISTING_AGENT_RETRIEVED = enum.auto()
     NEW_THREAD_CREATED = enum.auto()
@@ -94,12 +96,19 @@ class AGIActionType(enum.Enum):
     INGEST_FILE = enum.auto()
     ADD_MESSAGE = enum.auto()
     NEW_THREAD = enum.auto()
+    RUN_THREAD = enum.auto()
 
 
 @dataclasses.dataclass
 class AGIAction:
     action_type: AGIActionType
     action_data: Any
+
+
+@dataclasses.dataclass
+class AGIActionIngestFile:
+    agent_id: str
+    file_path: str
 
 
 @dataclasses.dataclass
@@ -118,6 +127,12 @@ class AGIActionNewThread:
 class AGIActionAddMessage:
     thread_id: str
     add_message: str
+
+
+@dataclasses.dataclass
+class AGIActionRunThread:
+    agent_id: str
+    thread_id: str
 
 
 AGIActionStream = NewType("AGIActionStream", AsyncIterator[AGIAction])
@@ -269,6 +284,20 @@ from typing import (
 )
 
 
+class _STOP_ASYNC_ITERATION:
+    pass
+
+
+STOP_ASYNC_ITERATION = _STOP_ASYNC_ITERATION()
+
+
+async def ignore_stopasynciteration(coro):
+    try:
+        return await coro
+    except StopAsyncIteration:
+        return STOP_ASYNC_ITERATION
+
+
 async def concurrently(
     work: Dict[asyncio.Task, Any],
     *,
@@ -331,16 +360,22 @@ async def agent_openai(
 
     action_stream_iter = action_stream.__aiter__()
     work = {
-        tg.create_task(action_stream_iter.__anext__()): (
+        tg.create_task(
+            ignore_stopasynciteration(action_stream_iter.__anext__())
+        ): (
             "action_stream",
             action_stream_iter,
         ),
     }
     async for (work_name, work_ctx), result in concurrently(work):
         print(f"openai_agent.{work_name}", pprint.pformat(result))
+        if result is STOP_ASYNC_ITERATION:
+            continue
         # TODO There should be no await's here, always add to work
         if work_name == "action_stream":
-            work[tg.create_task(work_ctx.__anext__())] = (work_name, work_ctx)
+            work[
+                tg.create_task(ignore_stopasynciteration(work_ctx.__anext__()))
+            ] = (work_name, work_ctx)
             if result.action_type == AGIActionType.NEW_AGENT:
                 assistant = None
                 if result.action_data.agent_id:
@@ -374,34 +409,40 @@ async def agent_openai(
                             agent_name=result.action_data.agent_name,
                         ),
                     )
-            if result.action_type == AGIActionType.INGEST_FILE:
+                agents[assistant.id] = assistant
+            elif result.action_type == AGIActionType.INGEST_FILE:
                 # TODO aiofile and tg.create_task
                 with open(result.action_data.file_path, "rb") as fileobj:
                     file = await client.files.create(
                         file=fileobj,
                         purpose="assistants",
                     )
-                await agents[result.action_data.agent_id].update(
+                await openai.resources.beta.assistants.AsyncAssistants(
+                    client
+                ).update(
+                    assistant_id=result.action_data.agent_id,
                     file_ids=agents[result.action_data.agent_id].file_ids
-                    + file.id,
+                    + [file.id],
                 )
             elif result.action_type == AGIActionType.NEW_THREAD:
-                run = await client.beta.threads.create_and_run(
-                    assistant_id=result.action_data.agent_id,
-                )
-                threads[run.thread_id] = run.thread_id
+                thread = await client.beta.threads.create()
                 yield AGIEvent(
                     event_type=AGIEventType.NEW_THREAD_CREATED,
                     event_data=AGIEventNewThreadCreated(
                         agent_id=result.action_data.agent_id,
-                        thread_id=run.thread_id,
+                        thread_id=thread.id,
                     ),
+                )
+            elif result.action_type == AGIActionType.RUN_THREAD:
+                run = await client.beta.threads.runs.create(
+                    assistant_id=result.action_data.agent_id,
+                    thread_id=result.action_data.thread_id,
                 )
                 yield AGIEvent(
                     event_type=AGIEventType.NEW_THREAD_RUN_CREATED,
                     event_data=AGIEventNewThreadRunCreated(
                         agent_id=result.action_data.agent_id,
-                        thread_id=run.thread_id,
+                        thread_id=result.action_data.thread_id,
                         run_id=run.id,
                         run_status=run.status,
                     ),
@@ -417,10 +458,9 @@ async def agent_openai(
                     run,
                 )
             elif result.action_type == AGIActionType.ADD_MESSAGE:
-                continue
                 _message = await client.beta.threads.messages.create(
                     thread_id=result.action_data.thread_id,
-                    role="user",
+                    role=result.action_data.role,
                     content=result.action_data.add_message,
                 )
         elif work_name.startswith("thread.runs."):
@@ -440,7 +480,13 @@ async def agent_openai(
                     thread_id=result.thread_id,
                 )
                 thread_messages_iter = thread_messages.__aiter__()
-                work[tg.create_task(thread_messages_iter.__anext__())] = (
+                work[
+                    tg.create_task(
+                        ignore_stopasynciteration(
+                            thread_messages_iter.__anext__()
+                        )
+                    )
+                ] = (
                     f"thread.messages.{result.thread_id}",
                     thread_messages_iter,
                 )
@@ -476,7 +522,9 @@ async def agent_openai(
                 )
         elif work_name.startswith("thread.messages."):
             _, _, thread_id = work_name.split(".", maxsplit=3)
-            work[tg.create_task(work_ctx.__anext__())] = (work_name, work_ctx)
+            work[
+                tg.create_task(ignore_stopasynciteration(work_ctx.__anext__()))
+            ] = (work_name, work_ctx)
             for content in result.content:
                 if content.type == "text":
                     yield AGIEvent(
@@ -489,6 +537,11 @@ async def agent_openai(
                             message_content=content.text.value,
                         ),
                     )
+
+    yield AGIEvent(
+        event_type=AGIEventType.END_EVENTS,
+        event_data=None,
+    )
 
 
 class _STDIN_CLOSED:
@@ -591,6 +644,13 @@ async def pdb_action_stream(tg, user_name, agents, threads, action_stream_seed):
                 action_data=AGIActionAddMessage(
                     thread_id=current_thread.state_data.thread_id,
                     add_message=user_input,
+                ),
+            )
+            yield AGIAction(
+                action_type=AGIActionType.RUN_THREAD,
+                action_data=AGIActionRunThread(
+                    agent_id=current_thread.state_data.agent_id,
+                    thread_id=current_thread.state_data.thread_id,
                 ),
             )
         else:
@@ -724,6 +784,9 @@ async def main(
                         f"{agent_state.state_data.agent_name}: {agent_event.event_data.message_content}"
                     )
                     print(f"{user_name}: ", end="\r")
+            elif result.action_type == AGIActionType.ADD_MESSAGE:
+                # If no thread, re-enqueue
+                continue
 
 
 if __name__ == "__main__":
