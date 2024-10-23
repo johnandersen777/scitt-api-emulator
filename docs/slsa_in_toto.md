@@ -4,6 +4,9 @@
 
 Targets are new commits, branches, tags, and their CI/CD (status check) results
 
+- Example GitHub Webhooks: https://gist.github.com/2bb4bb6d7a6abaa07cebc7c04d1cafa5
+  - Push event
+  - Workflow run and status check events
 - Transforms GitHub webhook payloads into statements
   - https://github.com/in-toto/attestation/blob/99d851228fe284c66b2cde353a6693c5eff69db1/spec/v1/statement.md
   - https://github.com/in-toto/attestation/blob/99d851228fe284c66b2cde353a6693c5eff69db1/spec/predicates/test-result.md
