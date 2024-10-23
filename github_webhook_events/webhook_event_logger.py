@@ -18,9 +18,23 @@ class GitHubWebhookLogger(http.server.BaseHTTPRequestHandler):
         self.wfile.write(b"OK\n")
 
         payload = json.loads(self.rfile.read())
+        payload_path = pathlib.Path(
+            ".".join(
+                [
+                    self.headers["X-github-event"],
+                    *(
+                        [
+                            ":".join([key, value])
+                            for key, value in payload.items()
+                            if isinstance(value, str) and not os.sep in value
+                        ]
+                        + ["json"]
+                    ),
+                ],
+            )
+        )
 
-        print(json.dumps(list(payload.keys())))
-        print(json.dumps(payload))
+        payload_path.write_text(json.dumps(payload))
 
     @classmethod
     def cli(cls, argv=None):
