@@ -14,6 +14,23 @@ Goal: Create YAML file allowing users to map webhook event data to creation of d
 
 Use presence of data in respective feeds/subjects to determine overall result (URL or RDF + jq / jsonpath?)
 
+```mermaid
+graph LR
+    subgraph s2c2f_attestations_of_alignment[S2C2F Attestations of Alignment SCITT Flow]
+        new_license_scan[New License Scan]
+        new_attestation_of_alignment[New Attestation of Alignment]
+        check_sboms{Check SBOMs}
+        sca_2_true["SCA-2 = True"]
+        sca_2_false["SCA-2 = False"]
+
+        new_license_scan -- "Watch for events" --> check_sboms
+        check_sboms -- "Scan for each dep present" --> sca_2_true
+        check_sboms -- "Scan for each dep not present" --> sca_2_false
+        sca_2_true --> new_attestation_of_alignment
+        sca_2_false --> new_attestation_of_alignment
+    end
+```
+
 | **Requirement ID** | **Requirement Title** | **References** |
 | --- | --- | --- |
 | ING-1 | Use package managers trusted by your organization | |
