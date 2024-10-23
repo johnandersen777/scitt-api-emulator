@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Usage: PYTHONPATH=$PWD:$PYTHONPATH PORT=8000 bash start.sh
 set -xeuo pipefail
 
 rm -rf workspace/ federation_workspace/
