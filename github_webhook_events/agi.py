@@ -28,6 +28,7 @@ import pprint
 import asyncio
 import getpass
 import pathlib
+import tempfile
 import argparse
 import traceback
 import contextlib
@@ -35,12 +36,28 @@ import collections
 import dataclasses
 from typing import Any, List, Optional, NewType, AsyncIterator
 
+with contextlib.suppress(Exception):
+    import snoop
+
+
 import openai
 import keyring
 import logging
+from pydantic import BaseModel
 
 
 logger = logging.getLogger(__name__)
+
+
+
+class AGIOpenAIAssistantResponseStep(BaseModel):
+    explanation: str
+    bash_command: str
+
+
+class AGIOpenAIAssistantResponse(BaseModel):
+    steps: list[AGIOpenAIAssistantResponseStep]
+    final_goal: str
 
 
 def async_lambda(func):
@@ -465,9 +482,11 @@ async def agent_openai(
                             instructions=result.action_data.agent_instructions,
                             model=await kvstore.get(
                                 f"openai.assistants.{agi_name}.model",
-                                "gpt-4o",
+                                "gpt-4o-2024-08-06",
                             ),
-                            tools=[{"type": "file_search"}],
+                            # NOTE all tools must be of type `function` when
+                            # `response_format` is of type `json_schema`
+                            tools=[{"type": "file_search"}, openai.pydantic_function_tool(AGIOpenAIAssistantResponse)]
                             # file_ids=[file.id],
                         )
                         yield AGIEvent(
@@ -523,7 +542,11 @@ async def agent_openai(
                         ),
                     )
                 elif result.action_type == AGIActionType.NEW_THREAD:
-                    thread = await client.beta.threads.create()
+                    thread = await client.beta.threads.create(
+                        messages=[
+                            {"role": "assistant", "content": "You are a helpful UNIX shell ghost, you live in a UNIX shell. The user is also in the shell with you. Run commands and explain your thought process. Guide the user through debugging step by step."},
+                        ],
+                    )
                     yield AGIEvent(
                         event_type=AGIEventType.NEW_THREAD_CREATED,
                         event_data=AGIEventNewThreadCreated(
@@ -650,6 +673,7 @@ async def agent_openai(
                 # TODO Keep track of what the last response received was so that
                 # we can create_task as many times as there might be responses
                 # in case there are multiple within one run.
+                """
                 work[
                     tg.create_task(
                         ignore_stopasynciteration(
@@ -657,7 +681,10 @@ async def agent_openai(
                         )
                     )
                 ] = (work_name, work_ctx)
+                """
                 for content in result.content:
+                    # snoop.pp(result, content)
+                    # print(response.choices[0].message.tool_calls[0].function)
                     if content.type == "text":
                         yield AGIEvent(
                             event_type=AGIEventType.NEW_THREAD_MESSAGE,
@@ -695,8 +722,8 @@ def pdb_action_stream_get_user_input(user_name: str):
     user_input = ""
     sys_stdin_iter = sys.stdin.__iter__()
     try:
+        print(f"{user_name}: ", end="")
         while not user_input:
-            print(f"{user_name}: ", end="\r")
             user_input = sys_stdin_iter.__next__().rstrip()
     except (KeyboardInterrupt, StopIteration):
         return STDIN_CLOSED
@@ -742,6 +769,9 @@ class AGIThinClientNeedsModelAccessError(Exception):
     pass
 
 
+import libtmux
+
+
 async def main(
     user_name: str,
     agi_name: str,
@@ -751,11 +781,13 @@ async def main(
     action_stream: AGIActionStream = None,
     openai_api_key: str = None,
     openai_base_url: Optional[str] = None,
+    pane: Optional[libtmux.Pane] = None,
 ):
     if not kvstore:
         kvstore = KVStoreKeyring({"service_name": kvstore_service_name})
 
     kvstore_key_agent_id = f"agents.{agi_name}.id"
+    snoop.pp(kvstore_key_agent_id, await kvstore.get(kvstore_key_agent_id, None))
     action_stream_seed = [
         AGIAction(
             action_type=AGIActionType.NEW_AGENT,
@@ -842,7 +874,6 @@ async def main(
                 ] = (work_name, work_ctx)
                 agent_event = result
                 logger.debug("agent_event: %s", pprint.pformat(agent_event))
-                print(f"{user_name}: ", end="\r")
                 if agent_event.event_type in (
                     AGIEventType.NEW_AGENT_CREATED,
                     AGIEventType.EXISTING_AGENT_RETRIEVED,
@@ -949,10 +980,16 @@ async def main(
                         agent_event.event_data.message_content_type == "text"
                         and agent_event.event_data.message_role == "agent"
                     ):
-                        print(
-                            f"{agent_state.state_data.agent_name}: {agent_event.event_data.message_content}"
-                        )
-                        print(f"{user_name}: ", end="\r")
+                        # TODOTODOTODO
+                        if pane is not None:
+                            # pane.send_keys(f"cat<<'EOF'")
+                            pane.send_keys(f"{agent_event.event_data.message_content}")
+                            # pane.send_keys("EOF")
+                        else:
+                            print(
+                                f"{agent_state.state_data.agent_name}: {agent_event.event_data.message_content}"
+                            )
+                            print(f"{user_name}: ", end="")
                 # Run any actions which have been waiting for an event
                 still_waiting = []
                 while waiting:
@@ -1053,6 +1090,32 @@ async def main(
                     )
 
 
+import libtmux
+
+
+async def tmux_test(*args, **kwargs):
+    with tempfile.TemporaryDirectory() as tempdir:
+        pane = None
+        try:
+            server = libtmux.Server()
+            session = server.attached_sessions[0]
+            tempdir_env_var = f"TEMPDIR_ENV_VAR_{uuid.uuid4()}".replace("-", "_")
+            server.set_environment(tempdir_env_var, tempdir)
+            pane = session.active_window.split(attach=False)
+            pathlib.Path(tempdir, "host_path.txt").write_text(tempdir_env_var)
+            pane.send_keys('docker run --rm -ti -v "${' + tempdir_env_var + '}:/host:rw" registry.fedoraproject.org/fedora', enter=True)
+            agi_name = "alice"
+            pane.send_keys(f"export PS1='{agi_name} $ '", enter=True)
+            pane.send_keys(f"set -x")
+            pane.send_keys(f"")
+            await main(*args, pane=pane, **kwargs)
+        finally:
+            with contextlib.suppress(Exception):
+                pane.kill()
+
+        # pane = libtmux.Pane.from_pane_id(pane_id=pane.cmd('split-window', '-P', '-F#{pane_id}').stdout[0], server=pane.server)
+
+
 if __name__ == "__main__":
     # TODO Hook each thread to a terminal context with tmux
     parser = make_argparse_parser()
@@ -1060,4 +1123,5 @@ if __name__ == "__main__":
     args = parser.parse_args(sys.argv[1:])
 
     # TODO LiteLLM
-    asyncio.run(main(**vars(args)))
+    # asyncio.run(main(**vars(args)))
+    asyncio.run(tmux_test(**vars(args)))
