@@ -275,6 +275,7 @@ import multiprocessing
 import concurrent.futures
 from typing import (
     Union,
+    Awaitable,
     Callable,
     Optional,
     Tuple,
@@ -3373,6 +3374,7 @@ async def agent_openai(
     agi_name: str,
     kvstore: KVStore,
     action_stream: AGIActionStream,
+    action_stream_insert: Callable[[Any], Awaitable[Any]],
     openai_api_key: str,
     *,
     openai_base_url: Optional[str] = None,
@@ -3381,6 +3383,9 @@ async def agent_openai(
         api_key=openai_api_key,
         base_url=openai_base_url,
     )
+
+    waiting = []
+    previous_event_types = set()
 
     agents = {}
     threads = {}
@@ -3653,6 +3658,29 @@ async def agent_openai(
                                 message_content=content.text.value,
                             ),
                         )
+            # Run actions which have are waiting for an event which was seen
+            still_waiting = []
+            while waiting:
+                action_waiting_for_event, make_action = waiting.pop(0)
+                if (
+                    (
+                        not isinstance(action_waiting_for_event, (dict, list))
+                        and action_waiting_for_event in previous_event_types
+                    ) or (
+                        isinstance(action_waiting_for_event, list)
+                        and set(action_waiting_for_event).intersection(previous_event_types)
+                    ) or (
+                        isinstance(action_waiting_for_event, dict)
+                        and set(action_waiting_for_event.values()).issubset(previous_event_types)
+                    )
+                ):
+                    await action_stream_insert(await make_action())
+                else:
+                    still_waiting.append(
+                        (action_waiting_for_event, make_action)
+                    )
+            waiting.extend(still_waiting)
+            # TODO Support on-next-tick waiting again instead of ever seen
         except Exception as error:
             traceback.print_exc()
             yield AGIEvent(
@@ -3900,6 +3928,7 @@ async def main(
         action_stream = user_input_action_stream_queue_iterator(
             user_input_action_stream_queue,
         )
+        action_stream_insert = user_input_action_stream_queue.put
 
         for action in action_stream_seed:
             await user_input_action_stream_queue.put(action)
@@ -3910,6 +3939,7 @@ async def main(
                 agi_name,
                 kvstore,
                 action_stream,
+                action_stream_insert,
                 openai_api_key,
                 openai_base_url=openai_base_url,
             )
