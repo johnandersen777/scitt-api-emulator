@@ -39,6 +39,7 @@ COPY ./agi.py /host/
 
 RUN bash -xec "$(grep 'pip install' /host/agi.py | head -n 1)"
 
+COPY util.sh /host/
 COPY entrypoint-server.sh /host/
 COPY locked-shell.sh /bin/
 
