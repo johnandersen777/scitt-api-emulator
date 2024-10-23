@@ -3226,6 +3226,13 @@ def make_argparse_parser(argv=None):
         ),
         help="Handle to address the user as",
     )
+    # TODO Integrate tmux stuff cleanly
+    parser.add_argument(
+        "--socket-path",
+        dest="socket_path",
+        default=None,
+        type=str,
+    )
     parser.add_argument(
         "--agi-name",
         dest="agi_name",
@@ -3917,6 +3924,23 @@ async def main(
 
                         pane.send_keys(f'', enter=True)
                         pane.send_keys("source ${CALLER_PATH}/util.sh", enter=True)
+                        pane.send_keys(
+                            textwrap.dedent(
+                                '''
+                                if [ ! -f "${CALLER_PATH}/policy_engine.logs.txt" ]; then
+                                    NO_CELERY=1 python -u ${CALLER_PATH}/policy_engine.py api --bind 127.0.0.1:0 --workers 1 1>"${CALLER_PATH}/policy_engine.logs.txt" 2>&1 &
+                                    POLICY_ENGINE_PID=$!
+
+                                    until find_listening_ports "$POLICY_ENGINE_PID"; do sleep 0.01; done
+
+                                    export POLICY_ENGINE_PORT=$(find_listening_ports "$POLICY_ENGINE_PID")
+
+                                    echo "${POLICY_ENGINE_PORT}" > "${CALLER_PATH}/policy_engine_port.txt"
+                                fi
+                                '''.lstrip(),
+                            ),
+                            enter=True,
+                        )
                         pane.send_keys('if [ ! -f "${CALLER_PATH}/policy_engine.logs.txt" ]; then NO_CELERY=1 python -u ${CALLER_PATH}/policy_engine.py api --workers 1 1>"${CALLER_PATH}/policy_engine.logs.txt" 2>&1 & fi', enter=True)
                         pane.send_keys(f'', enter=True)
 
@@ -4149,7 +4173,7 @@ def a_shell_for_a_ghost_send_keys(pane, send_string, erase_after=None):
             time.sleep(0.01)
 
 
-async def tmux_test(*args, **kwargs):
+async def tmux_test(*args, socket_path=None, **kwargs):
     agi_name = "alice"
     ps1 = f'{agi_name} $ '
 
@@ -4161,7 +4185,9 @@ async def tmux_test(*args, **kwargs):
         pane = None
         possible_tempdir = tempdir
         try:
-            server = libtmux.Server()
+            server = libtmux.Server(
+                socket_path=socket_path,
+            )
             session = server.attached_sessions[0]
             tempdir_lookup_env_var = f'TEMPDIR_ENV_VAR_TMUX_WINDOW_{session.active_window.id.replace("@", "")}'
             # Make a new tempdir in case old one doesn't exist
