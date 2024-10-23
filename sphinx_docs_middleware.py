@@ -38,6 +38,7 @@ class SphinxDocsMiddleware:
 
     def add_routes(self, app):
         # TODO Blueprint?
+        @app.get("/index.html")
         @app.get("/")
         async def index():
             return await send_from_directory(

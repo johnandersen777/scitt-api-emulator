@@ -2,6 +2,9 @@
 # Usage: PYTHONPATH=$PWD:$PYTHONPATH PORT=8000 bash start.sh
 set -xeuo pipefail
 
+echo "Current date: $(date)"
+git log -n 1
+
 rm -rf workspace/ federation_workspace/
 
 mkdir -pv workspace/storage/operations/ federation_workspace/

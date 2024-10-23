@@ -4,3 +4,5 @@
 .. toctree::
 
     sbom_and_vex
+    slsa_in_toto
+    s2c2f
