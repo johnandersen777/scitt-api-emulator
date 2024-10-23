@@ -14,7 +14,7 @@ python -m pip install -U pip setuptools wheel snoop openai keyring libtmux
 ## Testing
 
 ```bash
-nodemon -e py,toml,yaml,yml,json --exec 'clear; python -u agi.py; test 1'
+nodemon -e py,toml,yaml,yml,json --exec "clear; python -m keyring del alice agents.alice.id; python -u agi.py; test 1"
 ```
 """
 
