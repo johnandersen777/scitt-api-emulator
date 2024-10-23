@@ -1,4 +1,4 @@
-"""
+r"""
 From: https://github.com/intel/dffml/tree/ecd458fcdb0c093b91c6028322495df9016cc536
 
 `git ls-remote` is a Git command that queries the remote repository for
@@ -40,6 +40,17 @@ parses the response to display the list of references in the remote repository.
 Remember that this data contains null bytes and other binary data. Thus,
 manipulating it as a regular string might result in incorrect results. Use
 appropriate methods to deal with binary data.
+
+Usage:
+
+```bash
+gh api \
+  -H "Accept: application/vnd.github+json" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  /repos/scitt-community/scitt-api-emulator/forks \
+  | jq -r '.[].html_url' \
+  | GH_TOKEN=$(gh auth token) time pythoe -u scitt_software_supply_chain_middleware/triggers/git_ls_remote.py \
+  | jq
 """
 import os
 import sys
