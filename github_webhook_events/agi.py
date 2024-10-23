@@ -6,8 +6,8 @@ export GITHUB_USER=myusername
 echo Or extract from GitHub CLI https://cli.github.com
 export GITHUB_USER=$(gh auth status | grep 'Logged in to github.com account ' | awk '{print $7}')
 echo On first run you have to run it twice
-ssh -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PasswordAuthentication=no $GITHUB_USER@localhost
-ssh -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PasswordAuthentication=no $GITHUB_USER@localhost
+ssh -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PasswordAuthentication=no -L /tmp/${GITHUB_USER}.sock:$(echo $TMUX | sed -e 's/,.*//g') ${GITHUB_USER}@localhost
+ssh -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PasswordAuthentication=no -L /tmp/${GITHUB_USER}.sock:$(echo $TMUX | sed -e 's/,.*//g') ${GITHUB_USER}@localhost
 ```
 
 # Contributing
