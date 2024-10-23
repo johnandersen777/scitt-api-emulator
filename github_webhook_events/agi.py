@@ -4159,7 +4159,7 @@ async def tmux_test(*args, **kwargs):
 
                 a_shell_for_a_ghost_send_keys(pane, motd_string, erase_after=1)
             else:
-                pane.send_keys('bash /host/entrypoint.sh', enter=True)
+                # pane.send_keys('bash /host/entrypoint.sh', enter=True)
                 threading.Thread(target=a_shell_for_a_ghost_send_keys,
                                  args=[pane, motd_string, 1]).run()
 
