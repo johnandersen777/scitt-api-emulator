@@ -4250,9 +4250,6 @@ def a_shell_for_a_ghost_send_keys(pane, send_string, erase_after=None):
 
 
 async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
-    agi_name = "alice"
-    ps1 = f'{agi_name} $ '
-
     pane = None
     tempdir = None
     possible_tempdir = tempdir
@@ -4274,10 +4271,27 @@ async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
             if pathlib.Path(possible_tempdir).is_dir():
                 tempdir = possible_tempdir
 
+        agi_name = kwargs["agi_name"]
+        ps1 = f'{agi_name} $ '
         for check_pane in session.active_window.panes:
-            if ps1.strip() in check_pane.capture_pane():
-                pane = check_pane
+            for line in check_pane.capture_pane():
+                if (
+                    # TODO Fix this hardcoded AGI name
+                    line.strip().startswith("alice")
+                    and line.split()[1] == "$"
+                    and len(line.split()) == 2
+                ):
+                    pane = check_pane
+                    kwargs["agi_name"] = line.split()[0].strip()
+                    break
+            agi_name = kwargs["agi_name"]
+            ps1 = f'{agi_name} $ '
+            if pane:
                 break
+            else:
+                if ps1.strip() in check_pane.capture_pane():
+                    pane = check_pane
+                    break
 
         if pane is None:
             pane = session.active_window.active_pane.split()
@@ -4474,6 +4488,9 @@ def run_tmux_attach(socket_path, input_socket_path):
         socket_path,
         "--input-socket-path",
         input_socket_path,
+        "--agi-name",
+        # TODO Something secure here, scitt URN and lookup for PS1?
+        f"alice{str(uuid.uuid4()).split('-')[4]}"
     ]
     with open(os.devnull, "w") as devnull:
         subprocess.Popen(
