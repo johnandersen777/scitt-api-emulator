@@ -3518,6 +3518,8 @@ async def agent_openai(
                             file=fileobj,
                             purpose="assistants",
                         )
+                        # TODO create_and_poll needs to be scheduled using
+                        # tg.create_task()
                         file_batch = await client.beta.vector_stores.file_batches.create_and_poll(
                             vector_store_id=vector_store.id,
                             file_ids=[file.id],
@@ -3531,6 +3533,7 @@ async def agent_openai(
                         ),
                     )
                 elif result.action_type == AGIActionType.NEW_THREAD:
+                    # TODO Prompt from result.action_data
                     thread = await client.beta.threads.create(
                         messages=[
                             {"role": "assistant", "content": "You are a helpful UNIX shell ghost, you live in a UNIX shell. The user is also in the shell with you. Run commands and explain your thought process. Guide the user through debugging step by step. Use the given structure to document the steps the user will execute in the shell and your commentary, notes, etc. as described"},
@@ -3551,7 +3554,7 @@ async def agent_openai(
                         )
                     except openai.BadRequestError as error:
                         # TODO Generic error handler pattern with plugin helpers
-                        if "already has an active run" in error["message"]:
+                        if "already has an active run" in str(error):
                             # Re-queue once run complete
                             waiting.append(
                                 (
@@ -3560,10 +3563,21 @@ async def agent_openai(
                                 )
                             )
                             # Check status of run
+                            runs = [
+                                run
+                                async for run in client.beta.threads.runs.list(
+                                    thread_id=result.action_data.thread_id,
+                                    order="desc",
+                                    limit=1,
+                                )
+                            ]
+                            snoop.pp(runs)
+                            run = runs[0]
                             work[
                                 tg.create_task(
                                     client.beta.threads.runs.retrieve(
-                                        thread_id=result.thread_id, run_id=result.id
+                                        thread_id=result.action_data.thread_id,
+                                        run_id=run.id,
                                     ),
                                 )
                             ] = (
@@ -3592,11 +3606,46 @@ async def agent_openai(
                         (result, run),
                     )
                 elif result.action_type == AGIActionType.ADD_MESSAGE:
-                    message = await client.beta.threads.messages.create(
-                        thread_id=result.action_data.thread_id,
-                        role=result.action_data.message_role,
-                        content=result.action_data.message_content,
-                    )
+                    try:
+                        message = await client.beta.threads.messages.create(
+                            thread_id=result.action_data.thread_id,
+                            role=result.action_data.message_role,
+                            content=result.action_data.message_content,
+                        )
+                    except openai.BadRequestError as error:
+                        # TODO Generic error handler pattern with plugin helpers
+                        if "while a run" in str(error) and "is active" in str(error):
+                            # Re-queue once run complete
+                            waiting.append(
+                                (
+                                    AGIEventType.THREAD_RUN_COMPLETE,
+                                    async_lambda(lambda: result),
+                                )
+                            )
+                            # Check status of run
+                            runs = [
+                                run
+                                async for run in client.beta.threads.runs.list(
+                                    thread_id=result.action_data.thread_id,
+                                    order="desc",
+                                    limit=1,
+                                )
+                            ]
+                            snoop.pp(runs)
+                            run = runs[0]
+                            work[
+                                tg.create_task(
+                                    client.beta.threads.runs.retrieve(
+                                        thread_id=result.action_data.thread_id,
+                                        run_id=run.id,
+                                    ),
+                                )
+                            ] = (
+                                f"thread.runs.{run.id}",
+                                (result, None),
+                            )
+                            continue
+                        raise
                     yield AGIEvent(
                         event_type=AGIEventType.THREAD_MESSAGE_ADDED,
                         event_data=AGIEventThreadMessageAdded(
@@ -3670,7 +3719,88 @@ async def agent_openai(
                             last_error=result.last_error,
                         ),
                     )
+                elif result.status == "requires_action":
+                    for tool_call in result.required_action.submit_tool_outputs.tool_calls:
+                        # TODO Plugins for tools
+                        if tool_call.function.name == "RetreiveInformation":
+                            tool_arguments = RetreiveInformation.model_validate_json(tool_call.function.arguments)
+                            snoop.pp(tool_arguments)
+
+                            async def do_file_search():
+                                with snoop():
+                                    assistant = (
+                                        await openai.resources.beta.assistants.AsyncAssistants(
+                                            client
+                                        ).retrieve(
+                                            assistant_id=result.action_data.agent_id,
+                                        )
+                                    )
+                                    # TODO KVM nested style instead of this manual
+                                    # single level rigid nesting
+                                    retrieval_assistant = (
+                                        await openai.resources.beta.assistants.AsyncAssistants(
+                                            client
+                                        ).retrieve(
+                                            assistant_id=assistant.metadata["retrieval_assistant_id"],
+                                        )
+                                    )
+
+                                    thread = await client.beta.threads.create(
+                                      messages=[
+                                        {
+                                          "role": "user",
+                                          "content": f"run file search to respond to: {tool_call.function.arguments}",
+                                        }
+                                      ]
+                                    )
+
+                                    # The thread now has a vector store with that file in its tool resources.
+                                    snoop.pp(thread.tool_resources.file_search)
+
+                                    run = await client.beta.threads.runs.create_and_poll(
+                                        thread_id=thread.id,
+                                        assistant_id=retrieval_assistant.id
+                                    )
+
+                                    messages = list(
+                                        [
+                                            message
+                                            async for message in client.beta.threads.messages.list(
+                                                thread_id=thread.id,
+                                                run_id=run.id,
+                                            )
+                                        ]
+                                    )
+
+                                    message_content = messages[0].content[0].text
+                                    annotations = message_content.annotations
+                                    citations = []
+                                    for index, annotation in enumerate(annotations):
+                                        message_content.value = message_content.value.replace(annotation.text, f"[{index}]")
+                                        if file_citation := getattr(annotation, "file_citation", None):
+                                            cited_file = await client.files.retrieve(file_citation.file_id)
+                                            citations.append(f"[{index}] {cited_file.filename}")
+
+                                    snoop.pp(message_content.value)
+                                    snoop.pp("\n".join(citations))
+
+                            # await call_tool_retreive_information(**tool_arguments)
+                            waiting.append(
+                                (
+                                    # OR is array, AND is dict values
+                                    [
+                                        AGIEventType.NEW_AGENT_CREATED,
+                                        AGIEventType.EXISTING_AGENT_RETRIEVED,
+                                    ],
+                                    do_file_search,
+                                )
+                            )
                 else:
+                    snoop.pp(
+                        AGIEventType.THREAD_RUN_EVENT_WITH_UNKNOWN_STATUS,
+                        result.status,
+                        json.loads(result.model_dump_json()),
+                    )
                     yield AGIEvent(
                         event_type=AGIEventType.THREAD_RUN_EVENT_WITH_UNKNOWN_STATUS,
                         event_data=AGIEventThreadRunEventWithUnknwonStatus(
@@ -4244,6 +4374,7 @@ async def main(
                     )
                 ] = (work_name, work_ctx)
                 user_input = result
+                snoop.pp(user_input)
                 waiting.append(
                     (
                         # OR is array, AND is dict values
