@@ -35,10 +35,16 @@ service_parameters_path = workspace_path.joinpath("service_parameters.json")
 service_parameters_text = service_parameters_path.read_text()
 service_parameters = json.loads(service_parameters_text)
 tree_alg = service_parameters["treeAlgorithm"]
-# define some entries
-# TODO Load from Bovine
-entries = []
-for statement_path in storage_path.glob("*.cose"):
+
+
+def get_entries():
+    entries = []
+    for statement_path in storage_path.glob("*.cose"):
+        entries.append(load_statement(statement_path))
+    return entries
+
+
+def load_statement(statement_path):
     entry_id = statement_path.stem
     statement = statement_path.read_bytes()
     msg = Sign1Message.decode(statement, tag=True)
@@ -51,14 +57,12 @@ for statement_path in storage_path.glob("*.cose"):
             statement_object = {"payload": str(repr(msg.payload))}
     receipt_path = statement_path.with_suffix(".receipt.cbor")
     receipt = receipt_path.read_bytes()
-    entries.append(
-        SCITTSignalsFederationCreatedEntry(
-            tree_alg=tree_alg,
-            entry_id=entry_id,
-            # receipt=receipt,
-            statement_object=statement_object,
-            public_service_parameters=service_parameters,
-        )
+    return SCITTSignalsFederationCreatedEntry(
+        tree_alg=tree_alg,
+        entry_id=entry_id,
+        # receipt=receipt,
+        statement_object=statement_object,
+        public_service_parameters=service_parameters,
     )
 
 
@@ -68,6 +72,7 @@ def entries_table() -> list[AnyComponent]:
     Show a table of four entries, `/api` is the endpoint the frontend will connect to
     when a entry visits `/` to fetch components to render.
     """
+    entries = get_entries()
     return [
         c.Page(  # Page provides a basic container for components
             components=[
@@ -101,6 +106,7 @@ def entry_profile(entry_id: str) -> list[AnyComponent]:
     """
     User profile page, the frontend will fetch this when the entry visits `/entry/{id}/`.
     """
+    entries = get_entries()
     try:
         entry = next(u for u in entries if u.entry_id == entry_id)
     except StopIteration:
