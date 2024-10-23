@@ -25,8 +25,6 @@ For more examples see
 
 ## Federation via ActivityPub
 
-![mr-rogers-neighborly-supply-chain-eventing](https://github.com/pdxjohnny/scitt-api-emulator/assets/5950433/5d3bd1a8-2d37-4bb3-beb3-956927b2e8c8)
-
 - Federation of SCITT events enables near real-time communication between supply
   chains.
     - Acceptance of claims to SCITT where payload data contains VEX, CSAF, VSA,
@@ -53,3 +51,5 @@ For more examples see
   }
 }
 ```
+
+![mr-rogers-neighborly-supply-chain-eventing](https://github.com/pdxjohnny/scitt-api-emulator/assets/5950433/5d3bd1a8-2d37-4bb3-beb3-956927b2e8c8)
