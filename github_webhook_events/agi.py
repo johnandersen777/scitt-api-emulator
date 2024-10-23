@@ -3684,7 +3684,11 @@ async def DEBUG_TEMP_message_handler(user_name,
             session = pane.window.session
             tempdir_lookup_env_var = f'TEMPDIR_ENV_VAR_TMUX_WINDOW_{session.active_window.id.replace("@", "")}'
             tempdir_env_var  = pane.window.session.show_environment()[tempdir_lookup_env_var]
-            tempdir = pane.window.session.show_environment()[tempdir_env_var]
+            tempdir = pathlib.Path(
+                pane.window.session.show_environment()[tempdir_env_var],
+            )
+            if not tempdir.is_dir():
+                raise Exception(f"{tempdir} is not dir")
             # Proposed workflow to be submitted to policy engine to get clear
             # for take off (aka workload id and exec in phase 0). Executing the
             # policy aka the workflow (would be the one we insert to once
@@ -4072,22 +4076,26 @@ async def tmux_test(*args, **kwargs):
                 textwrap.dedent(
                     f"""
                     #!/usr/bin/env bash
-                    set -x
+                    set -xeuo pipefail
+
+                    trap bash EXIT
 
                     export PS1='{ps1}'
 
-                    dnf install -y git vim openssh jq python python-pip python-venv
+                    dnf install -y git vim openssh jq python python-pip
+
+                    export EDITOR=vim
 
                     python -m pip install -U pip setuptools wheel build
-                    python -m pip install -U pyyaml snoop pytest aiohttp gidgethub[aiohttp] celery[redis] fastapi pydantic
+                    python -m pip install -U pyyaml snoop pytest httpx cachetools aiohttp gidgethub[aiohttp] celery[redis] fastapi pydantic gunicorn uvicorn
 
                     curl -sfLO https://github.com/pdxjohnny/scitt-api-emulator/raw/policy_engine_cwt_rebase/scitt_emulator/policy_engine.py
 
-                    (python -u policy_engine.py 2>&1 | tee policy_engine.logs.txt) &
+                    (NO_CELERY=1 python -u policy_engine.py api --workers 1 2>&1 | tee policy_engine.logs.txt) &
 
                     # clear
 
-                    exec bash
+                    bash
                     """
                 ).lstrip()
             )
@@ -4098,7 +4106,8 @@ async def tmux_test(*args, **kwargs):
                 pathlib.Path(tempdir, "host_path.txt").write_text(tempdir_env_var)
                 pane.send_keys('set -x', enter=True)
                 pane.send_keys(f'export {tempdir_env_var}="{tempdir}"', enter=True)
-                pane.send_keys('docker run --rm -ti -v "${' + tempdir_env_var + '}:/host:z" --entrypoint /host/entrypoint.sh registry.fedoraproject.org/fedora' +'; rm -rfv ${' + tempdir_env_var + '}', enter=True)
+                # pane.send_keys('docker run --rm -ti -v "${' + tempdir_env_var + '}:/host:z" --entrypoint /host/entrypoint.sh registry.fedoraproject.org/fedora' +'; rm -rfv ${' + tempdir_env_var + '}', enter=True)
+                pane.send_keys('docker run --rm -ti -v "${' + tempdir_env_var + '}:/host:z" --entrypoint /host/entrypoint.sh alice' +'; rm -rfv ${' + tempdir_env_var + '}', enter=True)
 
                 # TODO Error handling, immediate trampoline python socket nest
                 while ps1.strip() != pane.capture_pane()[-1].strip():
