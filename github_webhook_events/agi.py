@@ -4039,13 +4039,14 @@ async def main(
                         # pane.send_keys(f'cat >>EOF', enter=True)
                         success_string = "echo \"${PS1} $ We\'re in... awaiting instructions at $" + agi_name.upper() + "_INPUT\""
                         # a_shell_for_a_ghost_send_keys(pane, success_string, erase_after=4.2)
-                        a_shell_for_a_ghost_send_keys(pane, success_string)
-                        pane.send_keys(f'', enter=True)
+                        # a_shell_for_a_ghost_send_keys(pane, success_string)
+                        pane.send_keys(success_string, enter=True)
                         # pane.send_keys(f'EOF', enter=True)
                         # pane.send_keys(f'', enter=True)
                         pane.send_keys(f'ls -lAF ${agi_name.upper()}_INPUT', enter=True)
 
-                        a_shell_for_a_ghost_send_keys(pane, "echo ${PS1}" + motd_string)
+                        # a_shell_for_a_ghost_send_keys(pane, "echo ${PS1}" + motd_string)
+                        pane.send_keys("echo ${PS1}" + motd_string, enter=True)
                         pane.send_keys(f'', enter=True)
 
                         pane.send_keys(
@@ -4360,7 +4361,9 @@ async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
             textwrap.dedent(
                 r"""
                 mkdir -pv "${CALLER_PATH}"
+                rm -f "${CALLER_PATH}/input.txt"
                 touch "${CALLER_PATH}/input.txt"
+                rm -f "${CALLER_PATH}/input-last-line.txt"
                 touch "${CALLER_PATH}/input-last-line.txt"
                 """,
             ),
