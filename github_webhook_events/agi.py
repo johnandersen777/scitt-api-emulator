@@ -253,6 +253,7 @@ import copy
 import shlex
 import types
 import atexit
+import shutil
 import asyncio
 import pathlib
 import zipfile
@@ -3968,6 +3969,16 @@ async def read_unix_socket_lines(path):
         await writer.wait_closed()
 
 
+async def connect_and_read(socket_path: str, sleep_time: float = 0.1):
+    while True:
+        try:
+            reader, writer = await asyncio.open_unix_connection(socket_path)
+            return
+        except Exception as e:
+            logger.debug(f"connect_and_read({socket_path!r}): Connection failed: {e}")
+        await asyncio.sleep(sleep_time)
+
+
 async def pdb_action_stream(tg, user_name, agi_name, agents, threads, pane: Optional[libtmux.Pane] = None):
     # TODO Take ALICE_INPUT from args
     if pane is not None:
@@ -4823,18 +4834,27 @@ async def lifespan_logging(app):
 app = FastAPI(lifespan=lifespan_logging)
 
 
-def run_tmux_attach(socket_path, input_socket_path):
+class SuccessResponseConnect(BaseModel):
+    user: str
+    tempdir: str
+    client_pty_socket_path: str
+    control_pty_socket_path: str
+    connected: bool = True
+
+
+def run_pty_attach(ctx: SuccessResponseConnect):
+    atexit.register(shutil.rmtree, ctx.tempdir)
     cmd = [
         sys.executable,
         "-u",
         str(pathlib.Path(__file__).resolve()),
-        "--socket-path",
-        socket_path,
-        "--input-socket-path",
-        input_socket_path,
+        "--client-pty-socket-path",
+        ctx.client_pty_socket_path,
+        "--control-pty-socket-path",
+        ctx.control_pty_socket_path,
         "--agi-name",
         # TODO Something secure here, scitt URN and lookup for PS1?
-        f"alice{str(uuid.uuid4()).split('-')[4]}",
+        f"alice{str(uuid.uuid4()).split('-')[4]}{ctx.user}",
         "--log",
         "debug",
     ]
@@ -4848,28 +4868,17 @@ def run_tmux_attach(socket_path, input_socket_path):
         ).wait()
 
 
-async def connect_and_read(socket_path: str, sleep_time: float = 0.1):
-    while True:
-        try:
-            reader, writer = await asyncio.open_unix_connection(socket_path)
-            return
-        except Exception as e:
-            logger.debug(f"connect_and_read({socket_path!r}): Connection failed: {e}")
-        await asyncio.sleep(sleep_time)
-
-
-@app.get("/connect/{socket_stem}")
-async def connect(socket_stem: str, background_tasks: BackgroundTasks):
-    socket_tmux_path = f"/tmp/{socket_stem}.sock"
-    socket_input_path = f"/tmp/{socket_stem}-input.sock"
-    background_tasks.add_task(run_tmux_attach, socket_tmux_path, socket_input_path)
-    # parser = make_argparse_parser()
-    # args = parser.parse_args(["--socket-path", f"/tmp/{socket_stem}.sock"])
-    # task = asyncio.create_task(tmux_test(**vars(args)))
-    # await task
-    return {
-        "connected": True,
-    }
+@app.get("/{user}/connect/pty")
+async def connect(user: str, background_tasks: BackgroundTasks) -> SuccessResponseConnect:
+    tempdir = tempfile.mkdtemp()
+    response = SuccessResponseConnect(
+        user=user,
+        tempdir=tempdir,
+        client_pty_socket_path=os.path.join(tempdir, f"{user}_client_pty"),
+        control_pty_socket_path=os.path.join(tempdir, f"{user}_control_pty"),
+    )
+    background_tasks.add_task(run_pty_attach, response)
+    return response
 
 
 if __name__ == "__main__":
