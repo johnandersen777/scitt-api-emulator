@@ -3681,20 +3681,12 @@ async def DEBUG_TEMP_message_handler(user_name,
             pane.send_keys(f"{agent_event.event_data.message_content}")
             print()
             snoop.pp(json.loads(agent_event.event_data.message_content))
-            snoop.pp(pane.window.session.show_environment())
-            tempdirs = list(
-                [
-                    value
-                    for key, value in pane.window.session.show_environment().items()
-                    if key.startswith("TEMPDIR_ENV_VAR_")
-                ]
-            )
-            snoop.pp(tempdirs)
-            if not tempdirs:
-                raise RuntimeError("Why is there no TEMPDIR_ENV_VAR_? We found a pane??")
-            elif len(tempdirs) > 1:
-                raise NotImplementedError("Why is there more than one TEMPDIR_ENV_VAR_? per session? Maybe need one per window")
-            tempdir = tempdir[1]
+            snoop.pp()
+            session = pane.session
+            tempdir_lookup_env_var = f'TEMPDIR_ENV_VAR_TMUX_WINDOW_{session.active_window.id.replace("@", "")}'
+            # Make a new tempdir in case old one doesn't exist
+            tempdir_env_var = f"TEMPDIR_ENV_VAR_{uuid.uuid4()}".replace("-", "_")
+            tempdir = pane.window.session.show_environment()[tempdir_env_var]
             # Proposed workflow to be submitted to policy engine to get clear
             # for take off (aka workload id and exec in phase 0). Executing the
             # policy aka the workflow (would be the one we insert to once
@@ -4045,45 +4037,48 @@ def a_shell_for_a_ghost_send_keys(pane, send_string, erase_after=None):
             time.sleep(0.01)
 
 
-
 async def tmux_test(*args, **kwargs):
     agi_name = "alice"
     ps1 = f'{agi_name} $ '
 
-    with tempfile.TemporaryDirectory() as tempdir:
+    user_tempdir_path = pathlib.Path("~", ".tmp").expanduser()
+    if not user_tempdir_path.is_dir():
+        user_tempdir_path.mkdir(parents=True)
+
+    with tempfile.TemporaryDirectory(dir=user_tempdir_path, delete=False) as tempdir:
         pane = None
+        possible_tempdir = tempdir
         try:
             server = libtmux.Server()
             session = server.attached_sessions[0]
-            tempdirs = {
-                key: value
-                for key, value in session.show_environment().items()
-                if key.startswith("TEMPDIR_ENV_VAR_")
-            }
-            if len(tempdirs) >= 1:
-                # TOD0 Handle more than one?
-                tempdir_env_var, possible_tempdir = list(tempdirs.items())[0]
+            tempdir_lookup_env_var = f'TEMPDIR_ENV_VAR_TMUX_WINDOW_{session.active_window.id.replace("@", "")}'
+            # Make a new tempdir in case old one doesn't exist
+            tempdir_env_var = f"TEMPDIR_ENV_VAR_{uuid.uuid4()}".replace("-", "_")
+            env = session.show_environment()
+            if tempdir_lookup_env_var in env:
+                tempdir_env_var = env[tempdir_lookup_env_var]
+                possible_tempdir = env[tempdir_env_var]
                 if pathlib.Path(possible_tempdir).is_dir():
                     tempdir = possible_tempdir
-                    pathlib.Path(tempdir, "host_path.txt").write_text(tempdir_env_var)
-            if possible_tempdir != tempdir:
-                tempdir_env_var = f"TEMPDIR_ENV_VAR_{uuid.uuid4()}".replace("-", "_")
-                session.set_environment(tempdir_env_var, tempdir)
+                else:
+                    session.set_environment(tempdir_lookup_env_var, tempdir_env_var)
+                    session.set_environment(tempdir_env_var, tempdir)
             pane = None
             for check_pane in session.active_window.panes:
                 if ps1.strip() == "\n".join(check_pane.capture_pane()[-1:]).strip():
                     pane = check_pane
                     break
-            if pane is None:
+            if pane is None or possible_tempdir != tempdir:
                 pane = session.active_window.active_pane.split()
                 # pane = session.active_window.split(attach=False)
                 pathlib.Path(tempdir, "host_path.txt").write_text(tempdir_env_var)
                 # TODO entrypoint via volume mount
                 pane.send_keys('set -x', enter=True)
-                pane.send_keys('docker run --rm -ti -v "${' + tempdir_env_var + '}:/host:Z" registry.fedoraproject.org/fedora', enter=True)
+                pane.send_keys(f'export {tempdir_env_var}="{tempdir}"', enter=True)
+                pane.send_keys('docker run --rm -ti -v "${' + tempdir_env_var + '}:/host:Z" registry.fedoraproject.org/fedora' +'; rm -fv ${' + tempdir_env_var + '}', enter=True)
                 pane.send_keys(f"export PS1='{ps1}'", enter=True)
-                # pane.send_keys(f"set -x", enter=True)
-                # pane.send_keys(f"dnf install -y git vim ssh jq", enter=True)
+                pane.send_keys(f"set -x", enter=True)
+                pane.send_keys(f"dnf install -y git vim openssh jq python", enter=True)
                 # pane.send_keys(f"")
 
                 # TODO Error handling, immediate trampoline python socket nest
