@@ -3506,7 +3506,6 @@ async def agent_openai(
                             assistant_id=assistant.metadata["retrieval_assistant_id"],
                         )
                     )
-                    snoop.pp(retrieval_assistant)
                     vector_store = (
                         await openai.resources.beta.vector_stores.AsyncVectorStores(
                             client
@@ -3515,11 +3514,13 @@ async def agent_openai(
                         )
                     )
                     with open(result.action_data.file_path, "rb") as fileobj:
-                        file_paths = [result.action_data.file_path]
-                        file_streams = [fileobj]
-                        file_batch = await client.beta.vector_stores.file_batches.upload(
+                        file = await client.files.create(
+                            file=fileobj,
+                            purpose="assistants",
+                        )
+                        file_batch = await client.beta.vector_stores.file_batches.create_and_poll(
                             vector_store_id=vector_store.id,
-                            files=file_streams,
+                            file_ids=[file.id],
                         )
                         logger.debug("Uploaded %r: %r", result.action_data.file_path, pprint.pformat(file_batch))
                     yield AGIEvent(
