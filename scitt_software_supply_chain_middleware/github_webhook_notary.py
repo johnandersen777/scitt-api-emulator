@@ -60,10 +60,8 @@ def attestation_fields(name, sha_chksm):
     }
 
 
-@github_webhook_notary.route("/<org_name>/<repo_name>", methods=["POST"])
-async def github_webhook_notary_post_route(
-    org_name: str, repo_name: str
-) -> tuple[str, int]:
+@github_webhook_notary.route("/", methods=["POST"])
+async def github_webhook_notary_post_route() -> tuple[str, int]:
     # TODO Webhook secret hash validation
     event = request.headers.get("X-GitHub-Event")
     if event != "push":
@@ -94,7 +92,7 @@ async def github_webhook_notary_post_route(
             # routes to this blueprint and a key to the config for this
             # blueprint?
             None,
-            f"repo:{org_name}/{repo_name}:type:slsa:artifact:tar.gz",
+            f"repo:{payload['repository']['full_name']}:type:slsa:artifact:tar.gz",
             "application/json",
             json.dumps(attestation, sort_keys=True),
             private_key_pem_path=None,
