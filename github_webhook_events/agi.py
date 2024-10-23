@@ -18,6 +18,10 @@ from typing import Any, List, Optional, NewType, AsyncIterator
 
 import openai
 import keyring
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 def async_lambda(func):
@@ -411,7 +415,7 @@ async def agent_openai(
         ),
     }
     async for (work_name, work_ctx), result in concurrently(work):
-        print(f"openai_agent.{work_name}", pprint.pformat(result))
+        logger.debug(f"openai_agent.{work_name}: %s", pprint.pformat(result))
         if result is STOP_ASYNC_ITERATION:
             continue
         try:
@@ -489,7 +493,10 @@ async def agent_openai(
                             file_ids=file_ids,
                         )
                     )
-                    print("AsyncAssistants.update()", pprint.pformat(assistant))
+                    logger.debug(
+                        "AsyncAssistants.update(): %s",
+                        pprint.pformat(assistant),
+                    )
                     yield AGIEvent(
                         event_type=AGIEventType.NEW_FILE_ADDED,
                         event_data=AGIEventNewFileAdded(
@@ -621,7 +628,10 @@ async def agent_openai(
             elif work_name.startswith("thread.messages."):
                 action_new_thread_run, thread_messages_iter = work_ctx
                 _, _, thread_id = work_name.split(".", maxsplit=3)
-                # The zeroith index is the most recent response
+                # The first time we iterate is the most recent response
+                # TODO Keep track of what the last response received was so that
+                # we can create_task as many times as there might be responses
+                # in case there are multiple within one run.
                 work[
                     tg.create_task(
                         ignore_stopasynciteration(
@@ -693,7 +703,7 @@ class AsyncioLockedCurrentlyDict(collections.UserDict):
         super().__setitem__(name, value)
         self.currently = value
         self.currently_exists.set()
-        print("currently", value)
+        logger.debug("currently: %r", value)
 
     async def __aenter__(self):
         await self.lock.__aenter__()
@@ -809,7 +819,7 @@ async def main(
                     )
                 ] = (work_name, work_ctx)
                 agent_event = result
-                pprint.pprint(agent_event)
+                logger.debug("agent_event: %s", pprint.pformat(agent_event))
                 print(f"{user_name}: ", end="\r")
                 if agent_event.event_type in (
                     AGIEventType.NEW_AGENT_CREATED,
@@ -844,7 +854,10 @@ async def main(
                             agent_event.event_data.thread_id
                         )
                         """
-                        print(agents[agent_event.event_data.agent_id])
+                        logger.debug(
+                            "New thread created for agent: %r",
+                            agents[agent_event.event_data.agent_id],
+                        )
                 elif (
                     agent_event.event_type
                     == AGIEventType.NEW_THREAD_RUN_CREATED
@@ -857,7 +870,7 @@ async def main(
                         thread_state.most_recent_run_status = (
                             agent_event.event_data.run_status
                         )
-                        print(thread_state)
+                        logger.debug("New thread run created: %r", thread_state)
                 elif (
                     agent_event.event_type
                     == AGIEventType.THREAD_RUN_IN_PROGRESS
@@ -875,9 +888,12 @@ async def main(
                         ].state_data.most_recent_run_status = (
                             agent_event.event_data.run_status
                         )
-                        print(threads[agent_event.event_data.thread_id])
+                        logger.debug(
+                            "Thread run complete, agent: %r, thread: %r",
+                            agents[agent_event.event_data.agent_id],
+                            thread_state,
+                        )
                     async with agents:
-                        print(agents[agent_event.event_data.agent_id])
                         """
                         agents[
                             agent_event.event_data.agent_id
@@ -886,6 +902,7 @@ async def main(
                         )
                         print(agents[agent_event.event_data.agent_id])
                         """
+                        pass
                 elif agent_event.event_type == AGIEventType.THREAD_RUN_FAILED:
                     if (
                         agent_event.event_data.last_error.code
