@@ -3678,14 +3678,12 @@ async def DEBUG_TEMP_message_handler(user_name,
         if pane is not None:
             # pane.send_keys(f"cat<<'EOF'")
             # pane.send_keys(f"{agent_event.event_data.message_content}")
-            pane.send_keys(f"{agent_event.event_data.message_content}")
-            print()
+            # pane.send_keys(f"{agent_event.event_data.message_content}")
+            # print()
             snoop.pp(json.loads(agent_event.event_data.message_content))
-            snoop.pp()
-            session = pane.session
+            session = pane.window.session
             tempdir_lookup_env_var = f'TEMPDIR_ENV_VAR_TMUX_WINDOW_{session.active_window.id.replace("@", "")}'
-            # Make a new tempdir in case old one doesn't exist
-            tempdir_env_var = f"TEMPDIR_ENV_VAR_{uuid.uuid4()}".replace("-", "_")
+            tempdir_env_var  = pane.window.session.show_environment()[tempdir_lookup_env_var]
             tempdir = pane.window.session.show_environment()[tempdir_env_var]
             # Proposed workflow to be submitted to policy engine to get clear
             # for take off (aka workload id and exec in phase 0). Executing the
@@ -3693,12 +3691,15 @@ async def DEBUG_TEMP_message_handler(user_name,
             # paths can be mapped to poliy engine workflows easily
             proposed_workflow_path = pathlib.Path(tempdir, "proposed-workflow.yml")
             proposed_workflow_path.write_text(
-                yaml.dumps(
-                    AGIOpenAIAssistantResponse.model_validate_json(
-                        agent_event.event_data.message_content
-                    ).workflow.model_dump_json()
+                yaml.dump(
+                    json.loads(
+                        AGIOpenAIAssistantResponse.model_validate_json(
+                            agent_event.event_data.message_content
+                        ).workflow.model_dump_json()
+                   )
                 )
             )
+            pane.send_keys(f"cat /host/proposed-workflow.yml", enter=True)
             print(f"{user_name}: ", end="")
             print(f"{proposed_workflow_path.resolve()}:\n{proposed_workflow_path.read_text()}")
             print(f"{user_name}: ", end="")
@@ -4060,14 +4061,13 @@ async def tmux_test(*args, **kwargs):
                 possible_tempdir = env[tempdir_env_var]
                 if pathlib.Path(possible_tempdir).is_dir():
                     tempdir = possible_tempdir
-                else:
-                    session.set_environment(tempdir_lookup_env_var, tempdir_env_var)
-                    session.set_environment(tempdir_env_var, tempdir)
             pane = None
             for check_pane in session.active_window.panes:
                 if ps1.strip() == "\n".join(check_pane.capture_pane()[-1:]).strip():
                     pane = check_pane
                     break
+            session.set_environment(tempdir_lookup_env_var, tempdir_env_var)
+            session.set_environment(tempdir_env_var, tempdir)
             if pane is None or possible_tempdir != tempdir:
                 pane = session.active_window.active_pane.split()
                 # pane = session.active_window.split(attach=False)
@@ -4075,10 +4075,10 @@ async def tmux_test(*args, **kwargs):
                 # TODO entrypoint via volume mount
                 pane.send_keys('set -x', enter=True)
                 pane.send_keys(f'export {tempdir_env_var}="{tempdir}"', enter=True)
-                pane.send_keys('docker run --rm -ti -v "${' + tempdir_env_var + '}:/host:Z" registry.fedoraproject.org/fedora' +'; rm -fv ${' + tempdir_env_var + '}', enter=True)
+                pane.send_keys('docker run --rm -ti -v "${' + tempdir_env_var + '}:/host:z" registry.fedoraproject.org/fedora' +'; rm -fv ${' + tempdir_env_var + '}', enter=True)
                 pane.send_keys(f"export PS1='{ps1}'", enter=True)
                 pane.send_keys(f"set -x", enter=True)
-                pane.send_keys(f"dnf install -y git vim openssh jq python", enter=True)
+                # pane.send_keys(f"dnf install -y git vim openssh jq python", enter=True)
                 # pane.send_keys(f"")
 
                 # TODO Error handling, immediate trampoline python socket nest
