@@ -51,6 +51,18 @@ class GitHubWebhookLogger(http.server.BaseHTTPRequestHandler):
             help="GitHub repo in format org/repo",
         )
         parser.add_argument(
+            "--addr",
+            type=str,
+            help="Address to bind to",
+            default="0.0.0.0",
+        )
+        parser.add_argument(
+            "--port",
+            type=int,
+            help="Port to bind to",
+            default=0,
+        )
+        parser.add_argument(
             "--state-dir",
             dest="state_dir",
             type=pathlib.Path,
@@ -63,7 +75,7 @@ class GitHubWebhookLogger(http.server.BaseHTTPRequestHandler):
         if not args.state_dir.is_dir():
             args.state_dir.mkdir(parents=True)
 
-        with httptest.Server(cls) as logging_server:
+        with httptest.Server(cls, addr=(args.addr, args.port)) as logging_server:
             with httptest.Server(
                 httptest.CachingProxyHandler.to(
                     logging_server.url(), state_dir=str(args.state_dir.resolve())
