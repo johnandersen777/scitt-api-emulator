@@ -71,6 +71,10 @@ def entries_table() -> list[AnyComponent]:
     return [
         c.Page(  # Page provides a basic container for components
             components=[
+                c.Heading(text="SCITT UI", level=1),
+                c.Markdown(
+                    text="[https://scitt.unstable.chadig.com](https://scitt.unstable.chadig.com)",
+                ),
                 c.Heading(text="Entries", level=2),  # renders `<h2>Entries</h2>`
                 c.Table[
                     SCITTSignalsFederationCreatedEntry

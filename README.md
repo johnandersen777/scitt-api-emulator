@@ -4,7 +4,7 @@
 
 ## View Entries
 
-- https://view.scitt.unstable.chadig.com
+- [https://view.scitt.unstable.chadig.com](https://view.scitt.unstable.chadig.com)
 
 ## What is SCITT?
 
