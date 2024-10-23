@@ -466,6 +466,7 @@ async def agent_openai(
                     file_ids = agents[result.action_data.agent_id].file_ids + [
                         file.id
                     ]
+                    """
                     non_existant_file_ids = []
                     for file_id in file_ids:
                         try:
@@ -479,6 +480,7 @@ async def agent_openai(
                             non_existant_file_ids.append(file_id)
                     for file_id in non_existant_file_ids:
                         file_ids.remove(file_id)
+                    """
                     assistant = (
                         await openai.resources.beta.assistants.AsyncAssistants(
                             client
@@ -620,11 +622,13 @@ async def agent_openai(
                 action_new_thread_run, thread_messages_iter = work_ctx
                 _, _, thread_id = work_name.split(".", maxsplit=3)
                 # The zeroith index is the most recent response
-                """
                 work[
-                    tg.create_task(ignore_stopasynciteration(thread_messages_iter.__anext__()))
+                    tg.create_task(
+                        ignore_stopasynciteration(
+                            thread_messages_iter.__anext__()
+                        )
+                    )
                 ] = (work_name, work_ctx)
-                """
                 for content in result.content:
                     if content.type == "text":
                         yield AGIEvent(
@@ -632,7 +636,9 @@ async def agent_openai(
                             event_data=AGIEventNewThreadMessage(
                                 agent_id=action_new_thread_run.action_data.agent_id,
                                 thread_id=result.thread_id,
-                                message_role=result.role,
+                                message_role="agent"
+                                if result.role == "assistant"
+                                else "user",
                                 message_content_type=content.type,
                                 message_content=content.text.value,
                             ),
@@ -900,7 +906,10 @@ async def main(
                     async with agents:
                         agent_state = agents[agent_event.event_data.agent_id]
                     # TODO https://rich.readthedocs.io/en/stable/markdown.html
-                    if agent_event.event_data.message_content_type == "text":
+                    if (
+                        agent_event.event_data.message_content_type == "text"
+                        and agent_event.event_data.message_role == "agent"
+                    ):
                         print(
                             f"{agent_state.state_data.agent_name}: {agent_event.event_data.message_content}"
                         )
