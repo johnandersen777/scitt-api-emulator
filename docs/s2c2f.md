@@ -17,8 +17,8 @@ Use presence of data in respective feeds/subjects to determine overall result (U
 ```mermaid
 graph LR
     subgraph s2c2f_attestations_of_alignment[S2C2F Attestations of Alignment SCITT Flow]
-        new_license_scan[New License Scan]
-        new_attestation_of_alignment[New Attestation of Alignment]
+        new_license_scan[Transparent Statement: License Scan]
+        new_attestation_of_alignment[Transparent Statement: S2C2F Attestation of Alignment]
         check_sboms{Check SBOMs}
         sca_2_true["SCA-2 = True"]
         sca_2_false["SCA-2 = False"]
