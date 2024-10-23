@@ -5,6 +5,8 @@ set -xeuo pipefail
 echo "Current date: $(date)"
 git log -n 1
 
+pip install --force-reinstall --no-cache -r requirements.txt
+
 rm -rf workspace/ federation_workspace/
 
 mkdir -pv workspace/storage/operations/ federation_workspace/
