@@ -46,6 +46,7 @@ class AGIEventType(enum.Enum):
     THREAD_MESSAGE_ADDED = enum.auto()
     THREAD_RUN_COMPLETE = enum.auto()
     THREAD_RUN_IN_PROGRESS = enum.auto()
+    THREAD_RUN_FAILED = enum.auto()
     THREAD_RUN_EVENT_WITH_UNKNOWN_STATUS = enum.auto()
 
 
@@ -91,6 +92,14 @@ class AGIEventThreadRunComplete:
 
 @dataclasses.dataclass
 class AGIEventThreadRunInProgress:
+    agent_id: str
+    thread_id: str
+    run_id: str
+    run_status: str
+
+
+@dataclasses.dataclass
+class AGIEventThreadRunFailed:
     agent_id: str
     thread_id: str
     run_id: str
@@ -586,6 +595,17 @@ async def agent_openai(
                         f"thread.runs.{run.id}",
                         (action_new_thread_run, result),
                     )
+                elif result.status == "failed":
+                    yield AGIEvent(
+                        event_type=AGIEventType.THREAD_RUN_FAILED,
+                        event_data=AGIEventThreadRunFailed(
+                            agent_id=action_new_thread_run.action_data.agent_id,
+                            thread_id=result.thread_id,
+                            run_id=result.id,
+                            status=result.status,
+                            last_error=result.last_error,
+                        ),
+                    )
                 else:
                     yield AGIEvent(
                         event_type=AGIEventType.THREAD_RUN_EVENT_WITH_UNKNOWN_STATUS,
@@ -860,6 +880,22 @@ async def main(
                         )
                         print(agents[agent_event.event_data.agent_id])
                         """
+                elif agent_event.event_type == AGIEventType.THREAD_RUN_FAILED:
+                    if (
+                        agent_event.event_data.last_error.code
+                        == "rate_limit_exceeded"
+                    ):
+                        # TODO Change this to sleep within create_task
+                        await asyncio.sleep(20)
+                        await user_input_action_stream_queue.put(
+                            AGIAction(
+                                action_type=AGIActionType.RUN_THREAD,
+                                action_data=AGIActionRunThread(
+                                    agent_id=threads.currently.state_data.agent_id,
+                                    thread_id=threads.currently.state_data.thread_id,
+                                ),
+                            ),
+                        )
                 elif agent_event.event_type == AGIEventType.NEW_THREAD_MESSAGE:
                     async with agents:
                         agent_state = agents[agent_event.event_data.agent_id]
