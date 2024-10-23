@@ -1,1 +1,1 @@
-web: bash -xeou start.sh
+web: bash start.sh
