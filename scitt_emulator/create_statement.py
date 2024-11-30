@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 import base64
 import pathlib
+import hashlib
 import argparse
 from typing import Union, Optional, List
 
@@ -169,6 +170,26 @@ def create_claim(
     if private_key_pem_path and not private_key_pem_path.exists():
         private_key_pem_path.write_bytes(key_as_pem_bytes)
 
+    # https://github.com/TimothyClaeys/pycose/blob/e527e79b611f6cc6673bbb694056a7468c2eef75/pycose/messages/sign1message.py#L66C9-L79
+    msg.signature = b""
+    # https://github.com/TimothyClaeys/pycose/blob/e527e79b611f6cc6673bbb694056a7468c2eef75/pycose/messages/cosemessage.py#L143
+    claim = msg.encode(tag=True, sign=False)
+
+    # https://www.ietf.org/archive/id/draft-ietf-scitt-architecture-10.html#appendix-B.2-5
+    # signed statement and statement are identical AFAIK
+    message_type = "signed-statement"
+
+    hash_name = "sha256"
+    hash_instance = hashlib.new(hash_name)
+    hash_instance.update(claim)
+
+    base_encoding = "base64url"
+    base64url_encoded_bytes_digest = base64.urlsafe_b64encode(
+        hash_instance.digest(),
+    ).decode()
+
+    return f"urn:ietf:params:scitt:{message_type}:{hash_name}:{base_encoding}:{base64url_encoded_bytes_digest}"
+
 
 def cli(fn):
     p = fn("create-claim", description="Create a fake SCITT claim")
@@ -195,7 +216,8 @@ def cli(fn):
 def main(argv=None):
     parser = cli(argparse.ArgumentParser)
     args = parser.parse_args(argv)
-    args.func(args)
+    urn = args.func(args)
+    print(urn)
 
 
 if __name__ == "__main__":
