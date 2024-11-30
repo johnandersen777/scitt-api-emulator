@@ -36,7 +36,6 @@ setup(
         "pycose",
         "httpx",
         "flask",
-        "rkvst-archivist"
     ],
     extras_require={
         "oidc": [
