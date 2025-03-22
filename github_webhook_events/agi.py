@@ -4858,15 +4858,17 @@ async def connect_and_read(socket_path: str, sleep_time: float = 0.1):
         await asyncio.sleep(sleep_time)
 
 
-@app.get("/connect/{socket_stem}")
-async def connect(socket_stem: str, background_tasks: BackgroundTasks):
-    socket_tmux_path = f"/tmp/{socket_stem}.sock"
-    socket_input_path = f"/tmp/{socket_stem}-input.sock"
-    background_tasks.add_task(run_tmux_attach, socket_tmux_path, socket_input_path)
-    # parser = make_argparse_parser()
-    # args = parser.parse_args(["--socket-path", f"/tmp/{socket_stem}.sock"])
-    # task = asyncio.create_task(tmux_test(**vars(args)))
-    # await task
+# class RequestConnectTMUX(BaseModel, extra="forbid"):
+class RequestConnectTMUX(BaseModel):
+    socket_tmux_path: str = Field(default=None, alias="tmux.sock")
+    socket_input_path: str = Field(default=None, alias="input.sock")
+
+
+@app.post("/connect/tmux")
+async def connect(request_connect_tmux: RequestConnectTMUX, background_tasks: BackgroundTasks):
+    import snoop
+    snoop.pp(request_connect_tmux)
+    # background_tasks.add_task(run_tmux_attach, request_connect_tmux.socket_tmux_path, request_connect_tmux.socket_input_path)
     return {
         "connected": True,
     }
