@@ -4860,15 +4860,13 @@ async def connect_and_read(socket_path: str, sleep_time: float = 0.1):
 
 # class RequestConnectTMUX(BaseModel, extra="forbid"):
 class RequestConnectTMUX(BaseModel):
-    socket_tmux_path: str = Field(default=None, alias="tmux.sock")
-    socket_input_path: str = Field(default=None, alias="input.sock")
+    socket_tmux_path: str = Field(alias="tmux.sock")
+    socket_input_path: str = Field(alias="input.sock")
 
 
 @app.post("/connect/tmux")
 async def connect(request_connect_tmux: RequestConnectTMUX, background_tasks: BackgroundTasks):
-    import snoop
-    snoop.pp(request_connect_tmux)
-    # background_tasks.add_task(run_tmux_attach, request_connect_tmux.socket_tmux_path, request_connect_tmux.socket_input_path)
+    background_tasks.add_task(run_tmux_attach, request_connect_tmux.socket_tmux_path, request_connect_tmux.socket_input_path)
     return {
         "connected": True,
     }

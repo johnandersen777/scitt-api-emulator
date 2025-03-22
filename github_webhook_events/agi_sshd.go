@@ -1,4 +1,8 @@
-// ssh -NnT -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PasswordAuthentication=no -R /tmux.sock:$(echo $TMUX | sed -e 's/,.*//g') -R /input.sock:$(mktemp -d)/input.sock user@localhost
+// AGI_SOCK=/tmp/agi.sock go run agi_sshd.go
+//
+//	ssh -NnT -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PasswordAuthentication=no \
+//	  -R /tmux.sock:$(echo $TMUX | sed -e 's/,.*//g') \
+//	  -R /input.sock:$(mktemp -d)/input.sock user@localhost
 package main
 
 import (
@@ -54,7 +58,6 @@ func main() {
 	}
 }
 
-// loadOrGenerateHostKey attempts to read a PEM private key from path; if missing, generates an ephemeral RSA key
 func loadOrGenerateHostKey(path string) (ssh.Signer, error) {
 	data, err := os.ReadFile(path)
 	if err == nil {
@@ -104,6 +107,7 @@ func handleSSH(raw net.Conn, cfg *ssh.ServerConfig) {
 
 	forwards := make(map[string]*forward)
 	var mu sync.Mutex
+	notified := false
 
 	for req := range reqs {
 		switch req.Type {
@@ -123,10 +127,16 @@ func handleSSH(raw net.Conn, cfg *ssh.ServerConfig) {
 
 			mu.Lock()
 			forwards[base] = &forward{listener, localPath}
+			count := len(forwards)
 			mu.Unlock()
+
 			req.Reply(true, nil)
 			go acceptLoop(ctx, listener, serverConn, p.SocketPath)
-			go notifyAGI(ctx, &mu, forwards)
+
+			if !notified && count >= 2 {
+				notified = true
+				go notifyAGI(ctx, &mu, forwards)
+			}
 
 		case "cancel-streamlocal-forward@openssh.com":
 			var p struct{ SocketPath string }
@@ -142,7 +152,6 @@ func handleSSH(raw net.Conn, cfg *ssh.ServerConfig) {
 			}
 			mu.Unlock()
 			req.Reply(true, nil)
-			go notifyAGI(ctx, &mu, forwards)
 
 		default:
 			log.Printf("❓ unknown request: %s", req.Type)
@@ -171,10 +180,13 @@ func handleConn(ctx context.Context, conn net.Conn, sc *ssh.ServerConn, remotePa
 	defer conn.Close()
 	log.Printf("↔ proxying data for %s", remotePath)
 
-	payload := ssh.Marshal(struct{ SocketPath string }{remotePath})
-	channel, reqs, err := sc.OpenChannel("streamlocal@openssh.com", payload)
+	payload := ssh.Marshal(struct {
+		SocketPath string
+		Reserved   uint32
+	}{remotePath, 0})
+	channel, reqs, err := sc.OpenChannel("forwarded-streamlocal@openssh.com", payload)
 	if err != nil {
-		log.Printf("❌ OpenChannel failed: %v", err)
+		log.Printf("❌ OpenChannel failed %s: %v", remotePath, err)
 		return
 	}
 	go ssh.DiscardRequests(reqs)
