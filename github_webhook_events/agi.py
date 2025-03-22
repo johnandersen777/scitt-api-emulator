@@ -3971,9 +3971,9 @@ async def read_unix_socket_lines(path):
 async def pdb_action_stream(tg, user_name, agi_name, agents, threads, pane: Optional[libtmux.Pane] = None):
     # TODO Take ALICE_INPUT from args
     if pane is not None:
-        alice_input = pane.window.session.show_environment()[f"{agi_name}_INPUT"]
-        alice_input_sock = pane.window.session.show_environment()[f"{agi_name}_INPUT_SOCK"]
-        alice_input_last_line = pane.window.session.show_environment()[f"{agi_name}_INPUT_LAST_LINE"]
+        alice_input = pane.window.session.show_environment()[f"{agi_name.upper()}_INPUT"]
+        alice_input_sock = pane.window.session.show_environment()[f"{agi_name.upper()}_INPUT_SOCK"]
+        alice_input_last_line = pane.window.session.show_environment()[f"{agi_name.upper()}_INPUT_LAST_LINE"]
 
     if pathlib.Path(alice_input_sock).is_socket():
         await connect_and_read(alice_input_sock)
@@ -4267,7 +4267,7 @@ async def main(
                         # TODO Combine into thread?
                         # threading.Thread(target=a_shell_for_a_ghost_send_keys,
                         #                  args=[pane, motd_string, 1]).run()
-                        tempdir = pathlib.Path(pane.window.session.show_environment()[f"{agi_name}_INPUT"]).parent
+                        tempdir = pathlib.Path(pane.window.session.show_environment()[f"{agi_name.upper()}_INPUT"]).parent
 
                         pane.send_keys(f'', enter=True)
                         pane.send_keys('if [ "x${CALLER_PATH}" = "x" ]; then export CALLER_PATH="' + str(tempdir) + '"; fi', enter=True)
@@ -4308,10 +4308,10 @@ async def main(
                         # TODO
                         # TODO
 
-                        pane.send_keys(f'rm -fv /tmp/{user_name}-input.sock ${agi_name.upper()}_INPUT_SOCK', enter=True)
-                        pane.send_keys(f'ln -s ${agi_name.upper()}_INPUT_SOCK /tmp/{user_name}-input.sock', enter=True)
-                        pane.send_keys(f'socat UNIX-LISTEN:${agi_name.upper()}_INPUT_SOCK,fork EXEC:"/usr/bin/tail -F ${agi_name.upper()}_INPUT" &', enter=True)
-                        pane.send_keys(f'ls -lAF /tmp/{user_name}-input.sock', enter=True)
+                        # pane.send_keys(f'rm -fv /tmp/{user_name}-input.sock ${agi_name.upper()}_INPUT_SOCK', enter=True)
+                        # pane.send_keys(f'ln -s ${agi_name.upper()}_INPUT_SOCK /tmp/{user_name}-input.sock', enter=True)
+                        # pane.send_keys(f'socat UNIX-LISTEN:${agi_name.upper()}_INPUT_SOCK,fork EXEC:"/usr/bin/tail -F ${agi_name.upper()}_INPUT" &', enter=True)
+                        # pane.send_keys(f'ls -lAF /tmp/{user_name}-input.sock', enter=True)
 
                         # pane.send_keys(f'cat >>EOF', enter=True)
                         success_string = "echo \"${PS1} $ We\'re in... awaiting instructions at $" + agi_name.upper() + "_INPUT\""
@@ -4645,9 +4645,9 @@ async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
         session.set_environment(tempdir_lookup_env_var, tempdir_env_var)
         session.set_environment(tempdir_env_var, tempdir)
 
-        session.set_environment(f"{agi_name}_INPUT", str(pathlib.Path(tempdir, "input.txt")))
-        session.set_environment(f"{agi_name}_INPUT_SOCK", str(input_socket_path))
-        session.set_environment(f"{agi_name}_INPUT_LAST_LINE", str(pathlib.Path(tempdir, "input-last-line.txt")))
+        session.set_environment(f"{agi_name.upper()}_INPUT", str(pathlib.Path(tempdir, "input.txt")))
+        session.set_environment(f"{agi_name.upper()}_INPUT_SOCK", str(input_socket_path))
+        session.set_environment(f"{agi_name.upper()}_INPUT_LAST_LINE", str(pathlib.Path(tempdir, "input-last-line.txt")))
 
         pane.send_keys(
             textwrap.dedent(
@@ -4798,6 +4798,14 @@ async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
         while lines and ps1.strip() != "".join(lines[-1:]).strip():
             lines = pane.capture_pane()
             time.sleep(0.1)
+
+        pane.send_keys(f"export {agi_name.upper()}_INPUT=" + str(pathlib.Path(tempdir, "input.txt")), enter=True)
+        pane.send_keys(f"export {agi_name.upper()}_INPUT_SOCK=" + str(input_socket_path), enter=True)
+        pane.send_keys(f"export {agi_name.upper()}_INPUT_LAST_LINE=" + str(pathlib.Path(tempdir, "input-last-line.txt")), enter=True)
+        pane.send_keys(f'rm -fv ${agi_name.upper()}_INPUT_SOCK', enter=True)
+        pane.send_keys(f'ln -s ${agi_name.upper()}_INPUT_SOCK', enter=True)
+        pane.send_keys(f'socat UNIX-LISTEN:${agi_name.upper()}_INPUT_SOCK,fork EXEC:"/usr/bin/tail -F ${agi_name.upper()}_INPUT" &', enter=True)
+        pane.send_keys(f'ls -lAF ${agi_name.upper()}_INPUT', enter=True)
 
         pane.send_keys(f'set +x', enter=True)
 
