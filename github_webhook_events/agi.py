@@ -4161,7 +4161,12 @@ async def main(
             await action_stream_insert(action)
 
         if openai_api_key:
-            agent_events = agent_openai(
+            async def mock_agent_openai(*args, **kwargs):
+                await asyncio.Event().wait()
+                yield
+            # TODO Update vector beta code to current API state
+            # agent_events = agent_openai(
+            agent_events = mock_agent_openai(
                 tg,
                 agi_name,
                 kvstore,
