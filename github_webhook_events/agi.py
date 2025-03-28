@@ -2,6 +2,13 @@ r"""
 # Alice - aka the Open Architecture
 
 ```bash
+python -m uvicorn "agi:app" --uds "/tmp/agi.sock"
+
+AGI_SOCK=/tmp/agi.sock go run agi_sshd.go
+
+ssh -NnT -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PasswordAuthentication=no -R /tmux.sock:$(echo $TMUX | sed -e 's/,.*//g') -R /input.sock:$(mktemp -d)/input.sock user@localhost
+
+
 gh auth refresh -h github.com -s admin:public_key
 gh ssh-key add --title hat-$RANDOM ~/.ssh/*.pub
 export GITHUB_USER=myusername
@@ -457,7 +464,7 @@ class PolicyEngineWorkflowJobStep(BaseModel, extra="forbid"):
     def _serialize(self):
         omit_if_none_fields = {
             k
-            for k, v in self.model_fields.items()
+            for k, v in self.__class__.model_fields.items()
             if any(isinstance(m, OmitIfNone) for m in v.metadata)
         }
 
@@ -482,8 +489,13 @@ class PolicyEngineWorkflowJobStep(BaseModel, extra="forbid"):
         return data
 
 
+class PolicyEngineWorkflowJobRunsOn(BaseModel, extra="forbid"):
+    group: str
+    labels: Union[str, List[str]]
+
+
 class PolicyEngineWorkflowJob(BaseModel, extra="forbid"):
-    runs_on: Union[str, List[str], Dict[str, Any]]
+    runs_on: Union[str, List[str], PolicyEngineWorkflowJobRunsOn]
     steps: List[PolicyEngineWorkflowJobStep]
 
     @model_validator(mode="before")
@@ -499,7 +511,8 @@ class PolicyEngineWorkflowJob(BaseModel, extra="forbid"):
 
 class PolicyEngineWorkflow(BaseModel, extra="forbid"):
     name: Union[str, None]
-    on: Union[List[str], Dict[str, Any]]
+    # on: Union[List[str], Dict[str, Any]]
+    on: Union[List[str]] = Field(default_factory=lambda: ["push"])
     jobs: Union[Dict[str, PolicyEngineWorkflowJob], None]
 
     @model_validator(mode="before")
@@ -511,6 +524,11 @@ class PolicyEngineWorkflow(BaseModel, extra="forbid"):
                     data["on"] = data[check]
                     del data[check]
         return data
+
+
+pathlib.Path(__file__).parent.joinpath("workflow.schema.json").write_text(
+    json.dumps(PolicyEngineWorkflow.model_json_schema(), indent=4, sort_keys=True),
+)
 
 
 class GitHubWebhookEventSender(BaseModel):
@@ -1687,6 +1705,7 @@ class LifespanCallbackWithConfig(BaseModel):
             raise ValueError(
                 "Must specify either (entrypoint_string and config_string) or (callback and config_string) via kwargs"
             )
+        return self
 
     def __call__(self, *args, **kwargs):
         return self.callback(self.config_string, *args, **kwargs)
@@ -2962,6 +2981,7 @@ with contextlib.suppress(Exception):
 
 
 import openai
+import agents.mcp as openai_agents_mcp
 import keyring
 import logging
 from pydantic import BaseModel, ConfigDict
@@ -3391,9 +3411,219 @@ GPT_MODEL_VERSION = "gpt-4o-2024-08-06"
 def make_async_lambda(result):
     return async_lambda(lambda: result)
 
+r"""
+TODO
+
+- Update agi.py to deploy client side service so we aren't doing things with
+  bash so much in shell. Sock connects back and all should be API based
+- Time tracking and engineering log gen
+- Bash hook for new processes
+  - kubectl exec
+    - Capture context and insepct cluster, make available to LLM
+- Trust boundries for code gen
+  - Metadata classes should be created and loaded dynamically and added to
+    vector db or whatever so that LLM can cruse through full context
+  - Some runs on server with OpenAI API key and some runs on client.
+  - Ideally we have some sort of proxy which issues scoped tokens so that the
+    client can talk "directly" to OpenAI API and we keep stuff context local
+- https://github.com/slsa-framework/attested-build-environments-demo
+- "Clippy"
+  - Open pane when debugging help is identified based on train of thought
+    analysis.
+    - Looks like you're trying to kubectl apply but it's stuck in
+      ContainerCreating, did you type the image name correctly?
+"""
+
+import json
+import logging
+from typing import Dict, List, Optional, Union
+
+import libtmux
+import psutil
+from pydantic import BaseModel, Field
+
+# -----------------------------
+# Define Pydantic data models
+# -----------------------------
+
+class GitRemote(BaseModel):
+    name: str
+    url: str
+
+class GitMetadata(BaseModel):
+    repo_root: str
+    remotes: List[GitRemote] = Field(default_factory=list)
+
+class ProcessNode(BaseModel):
+    cmd: List[str]
+    children: List["ProcessNode"] = []
+
+# Allow recursive models
+ProcessNode.model_rebuild()
+
+class CommandMetadata(BaseModel):
+    tree: ProcessNode
+
+# This is the wrapper model that will be used to hold any metadata type.
+class MetadataWrapper(BaseModel):
+    metadata_class_entrypoint: str
+    data: Union[GitMetadata, CommandMetadata]
+
+class TmuxContext(BaseModel):
+    active_pane: str = Field(default="Active pane unknown")
+    session: Any = Field(exclude=True, default=None)
+    sessions: Dict[str, dict] = Field(default_factory=dict)
+
+# -----------------------------
+# Helper functions to collect metadata
+# -----------------------------
+
+def get_git_metadata(cwd: str) -> Optional[GitMetadata]:
+    """
+    Attempt to discover if the given cwd is inside a Git repository.
+    If it is, return a GitMetadata instance containing the repo's top level
+    directory (repo_root) and its remotes. Otherwise, return None.
+    """
+    try:
+        from git import Repo  # GitPython must be installed.
+        # search_parent_directories=True ensures that if cwd is a subdirectory,
+        # the repository root will be located.
+        repo = Repo(cwd, search_parent_directories=True)
+        repo_root = repo.git.rev_parse("--show-toplevel")
+        remotes = []
+        for remote in repo.remotes:
+            # Each remote can have one or more URLs; here we add each as a GitRemote.
+            for url in remote.urls:
+                remotes.append(GitRemote(name=remote.name, url=url))
+        return GitMetadata(repo_root=repo_root, remotes=remotes)
+    except Exception as error:
+        logging.exception("get_git_metadata(%s)", cwd, exc_info=error)
+        # cwd is likely not in a Git repository or an error occurred.
+        return None
+
+def build_process_tree(proc: psutil.Process) -> ProcessNode:
+    """
+    Recursively builds a tree structure for the given process.
+    """
+    try:
+        cmdline = proc.cmdline()
+        # NOTE Top level PIDs of bash processes seem to be "-bash", this fixes
+        if cmdline[0].startswith("-"):
+            cmdline[0] = cmdline[0][1:]
+    except Exception as error:
+        logging.exception("build_process_tree(%s)", proc, exc_info=error)
+        cmdline = []
+    try:
+        children = proc.children()
+    except Exception as error:
+        logging.exception("build_process_tree(%s)", proc, exc_info=error)
+        children = []
+    child_nodes = [build_process_tree(child) for child in children]
+    return ProcessNode(cmd=cmdline, children=child_nodes)
+
+def get_command_metadata(pid: int) -> CommandMetadata:
+    """
+    Returns a CommandMetadata instance containing a process tree for the given PID.
+    The tree includes the command-line (cmd) for the process and all its child processes.
+    """
+    try:
+        root_proc = psutil.Process(pid)
+        tree = build_process_tree(root_proc)
+        return CommandMetadata(tree=tree)
+    except Exception as error:
+        logging.exception("get_command_metadata(%d)", pid, exc_info=error)
+        # Process may have exited or access is denied.
+        return None
+
+# -----------------------------
+# Main function to gather tmux info with metadata
+# -----------------------------
+
+def get_tmux_window_info(*, server: libtmux.Server = None):
+    """
+    Create a nested dictionary where:
+      - The keys of the outer dictionary are session names.
+      - For each session, keys of the inner dictionary are window names.
+      - For each window, a list of pane dictionaries is stored.
+
+    Each pane dictionary contains:
+      - 'cwd': current working directory of the pane.
+      - 'pid': pane's process id.
+      - 'metadata': a list of MetadataWrapper instances providing additional info.
+    """
+    if server is None:
+        server = libtmux.Server()
+    tmux_ctx = TmuxContext(
+        session=server.active_window.session,
+    )
+    session_info = tmux_ctx.sessions
+
+    for session in server.sessions:
+        windows_info = {}
+        for window in session.windows:
+            pane_details = []
+            for pane in window.panes:
+                cwd = pane.pane_current_path
+                pid = int(pane.pane_pid)
+                metadata_entries = []
+
+                # Discover Git metadata based on the pane's cwd.
+                git_meta = get_git_metadata(cwd)
+                if git_meta is not None:
+                    git_wrapper = MetadataWrapper(
+                        metadata_class_entrypoint="my_module.git_metadata.GitMetadata",
+                        data=git_meta
+                    )
+                    metadata_entries.append(git_wrapper)
+
+                # Discover command metadata based on the pane's pid.
+                cmd_meta = get_command_metadata(pid)
+                if cmd_meta is not None:
+                    cmd_wrapper = MetadataWrapper(
+                        metadata_class_entrypoint="my_module.command_metadata.CommandMetadata",
+                        data=cmd_meta
+                    )
+                    metadata_entries.append(cmd_wrapper)
+
+                pane_detail = {
+                    "cwd": cwd,
+                    "pid": pid,
+                    "metadata": metadata_entries,
+                }
+                pane_details.append(pane_detail)
+            windows_info[window.name] = pane_details
+        session_info[session.name] = windows_info
+
+    return tmux_ctx
+
+
+@dataclasses.dataclass
+class UserContext:
+    tmux_context: TmuxContext = Field(default_factory=TmuxContext)
+
+
+from agents import Agent, RunContextWrapper, Runner, function_tool, set_default_openai_client, trace
+
+
+@function_tool
+async def fetch_user_tmux_session(wrapper: RunContextWrapper[UserContext]) -> str:
+    tmux_context = wrapper.context.tmux_context
+    if tmux_context.session is not None:
+        tmux_context.active_pane = str(tmux_context.session.active_pane)
+        tmux_context.sessions = get_tmux_window_info(
+            server=tmux_context.session.server,
+        )
+    return f"User terminal multiplexer context is {tmux_context.model_dump_json()}"
+
+
+class AGIThreadNotFoundError(Exception):
+    pass
+
 
 async def agent_openai(
     tg: asyncio.TaskGroup,
+    async_exit_stack: contextlib.AsyncExitStack,
+    user_context: UserContext,
     agi_name: str,
     kvstore: KVStore,
     action_stream: AGIActionStream,
@@ -3407,6 +3637,23 @@ async def agent_openai(
         api_key=openai_api_key,
         base_url=openai_base_url,
     )
+    set_default_openai_client(client)
+
+    # TODO NOTE This fucks up conncurently() due to aynio.create_task_group or
+    # something called under the MCP server, maybe just stdio fuck up? Maybe SSE
+    # works?
+    # mcp_server_top = await async_exit_stack.enter_async_context(
+    #     openai_agents_mcp.MCPServerStdio(
+    #         # cache_tools_list=True,  # Cache the tools list, for demonstration
+    #         params={"command": "uvx", "args": ["mcp-server-git"]},
+    #     )
+    # )
+    # mcp_server_workflow = await async_exit_stack.enter_async_context(
+    #     openai_agents_mcp.MCPServerStdio(
+    #         # cache_tools_list=True,  # Cache the tools list, for demonstration
+    #         params={"command": "python", "args": ["-c", "import mcp from agi; mcp.run(transport='stdio')"]},
+    #     )
+    # )
 
     agents = {}
     threads = {}
@@ -3434,268 +3681,290 @@ async def agent_openai(
                     )
                 ] = (work_name, work_ctx)
                 if result.action_type == AGIActionType.NEW_AGENT:
-                    assistant = None
-                    if result.action_data.agent_id:
-                        with contextlib.suppress(openai.NotFoundError):
-                            assistant = await client.beta.assistants.retrieve(
-                                assistant_id=result.action_data.agent_id,
-                            )
-                            yield AGIEvent(
-                                event_type=AGIEventType.EXISTING_AGENT_RETRIEVED,
-                                event_data=AGIEventNewAgent(
-                                    agent_id=assistant.id,
-                                    agent_name=result.action_data.agent_name,
+                    openai_assistant_context = Agent[UserContext](
+                        name="User Context Distiller and Provider",
+                        instructions=textwrap.dedent(
+                            r"""
+                            Given a question call tools to gain information
+                            about the users environment. Distil output of
+                            tool calls which might be relevant to the
+                            question you have been provided.
+                            """.strip(),
+                        ),
+                        tools=[
+                            fetch_user_tmux_session,
+                        ],
+                    )
+
+                    openai_assistant_workflow = Agent(
+                        name="Workflow Generation Assistant",
+                        instructions=textwrap.dedent(
+                            r"""
+                            You are an AI agent with access to
+                            tools to help a user who needs you to generate
+                            GitHub Actions schema compliant workflows.
+
+                            You may use tools to generate Actions if you
+                            cannot find ones that are applicable to your
+                            needs. If an Action would be too heavyweight,
+                            then you may inline code into run blocks using a
+                            shell of your choice. Prefer python.
+
+                            To use a custom shell specify
+
+                            shell: interpreter {0}
+
+                            Assume {0} is a temporary file containing the
+                            contents the code you place in `run`.
+                            """.strip(),
+                        ),
+                        # mcp_servers=[mcp_server_workflow],
+                        output_type=PolicyEngineWorkflow,
+                    )
+
+                    openai_assistant_top = Agent(
+                        name="Assistant",
+                        instructions=textwrap.dedent(
+                            r"""
+                            You are an AI agent with access to
+                            tools to help a user who is navigating between
+                            shells using a terminal multiplexer. Determine
+                            relevant tools to call and use the information
+                            provided about the users current context to
+                            determine what directory to use as what argument
+                            when calling tools. Shell contexts contain
+                            information about running processes the user is
+                            observing as well as what Git repos the user is
+                            working within.
+                            """.strip(),
+                        ),
+                        # mcp_servers=[
+                        #     mcp_server_top,
+                        # ],
+                        tools=[
+                            openai_assistant_workflow.as_tool(
+                                tool_name="generate_workflow",
+                                tool_description=textwrap.dedent(
+                                    r""""
+                                    Generate a workflow for execution within
+                                    the users environment.
+                                    """.strip(),
                                 ),
-                            )
-                    if not assistant:
-                        retrieval_assistant = await client.beta.assistants.create(
-                            name=f"{result.action_data.agent_name}-retrieval",
-                            # TODO Dynamically take prompt
-                            instructions=r"Use file search tools to retrieve information and generate useful responses from it as requested.",
-                            model=await kvstore.get(
-                                f"openai.assistants.{agi_name}.model",
-                                GPT_MODEL_VERSION,
                             ),
-                            tools=[{"type": "file_search"}],
-                        )
-                        vector_store = await client.beta.vector_stores.create(name=retrieval_assistant.id)
-                        retrieval_assistant = (
-                            await openai.resources.beta.assistants.AsyncAssistants(
-                                client
-                            ).update(
-                                assistant_id=retrieval_assistant.id,
-                                tool_resources={"file_search": {"vector_store_ids": [vector_store.id]}},
-                                metadata={
-                                    "vector_store_id": vector_store.id,
-                                },
-                            )
-                        )
-                        assistant = await client.beta.assistants.create(
-                            name=result.action_data.agent_name,
-                            instructions=result.action_data.agent_instructions,
-                            model=await kvstore.get(
-                                f"openai.assistants.{agi_name}.model",
-                                GPT_MODEL_VERSION,
+                            openai_assistant_context.as_tool(
+                                tool_name="provide_information_on_current_context",
+                                tool_description=textwrap.dedent(
+                                    r""""
+                                    Distil and provide information on the
+                                    active user context to inform parent
+                                    agent tool calls and generation
+                                    activities.
+                                    """.strip(),
+                                ),
                             ),
-                            metadata={
-                                "retrieval_assistant_id": retrieval_assistant.id,
-                            },
-                            tools=[openai.pydantic_function_tool(RetreiveInformation)],
-                            # tools=[{"type": "file_search"}],
-                            response_format={
-                                "type": "json_schema",
-                                "json_schema": {
-                                    "name": "AGIOpenAIAssistantResponse",
-                                    "strict": True,
-                                    "schema": AGIOpenAIAssistantResponse.model_json_schema(),
-                                },
-                            },
-                            # NOTE all tools must be of type `function` when
-                            # `response_format` is of type `json_schema`
-                            # tools=[{"type": "file_search"}, openai.pydantic_function_tool(AGIOpenAIAssistantResponse)]
-                            # file_ids=[file.id],
-                        )
-                        yield AGIEvent(
-                            event_type=AGIEventType.NEW_AGENT_CREATED,
-                            event_data=AGIEventNewAgent(
-                                agent_id=assistant.id,
-                                agent_name=result.action_data.agent_name,
-                            ),
-                        )
-                    agents[assistant.id] = assistant
-                elif result.action_type == AGIActionType.INGEST_FILE:
-                    # TODO Validate with server threat model
-                    if "NO_SHELL" in os.environ:
-                        continue
-                    assistant = (
-                        await openai.resources.beta.assistants.AsyncAssistants(
-                            client
-                        ).retrieve(
-                            assistant_id=result.action_data.agent_id,
-                        )
+                        ],
                     )
-                    retrieval_assistant = (
-                        await openai.resources.beta.assistants.AsyncAssistants(
-                            client
-                        ).retrieve(
-                            assistant_id=assistant.metadata["retrieval_assistant_id"],
-                        )
-                    )
-                    vector_store = (
-                        await openai.resources.beta.vector_stores.AsyncVectorStores(
-                            client
-                        ).retrieve(
-                            vector_store_id=retrieval_assistant.metadata["vector_store_id"],
-                        )
-                    )
-                    with open(result.action_data.file_path, "rb") as fileobj:
-                        file = await client.files.create(
-                            file=fileobj,
-                            purpose="assistants",
-                        )
-                        # TODO create_and_poll needs to be scheduled using
-                        # tg.create_task()
-                        file_batch = await client.beta.vector_stores.file_batches.create_and_poll(
-                            vector_store_id=vector_store.id,
-                            file_ids=[file.id],
-                        )
-                        logger.debug("Uploaded %r: %r", result.action_data.file_path, pprint.pformat(file_batch))
+                    assistant_id = str(uuid.uuid4())
+                    # agents[assistant_id] = openai_assistant_top
+                    agents[assistant_id] = openai_assistant_workflow
                     yield AGIEvent(
-                        event_type=AGIEventType.FILE_INGESTED,
-                        event_data=AGIEventNewFileAdded(
-                            agent_id=result.action_data.agent_id,
-                            file_id=file.id,
+                        event_type=AGIEventType.NEW_AGENT_CREATED,
+                        event_data=AGIEventNewAgent(
+                            agent_id=assistant_id,
+                            agent_name=assistant_id,
                         ),
                     )
                 elif result.action_type == AGIActionType.NEW_THREAD:
                     # TODO Prompt from result.action_data
-                    thread = await client.beta.threads.create(
-                        messages=[
-                            {"role": "assistant", "content": "You are a helpful UNIX shell ghost, you live in a UNIX shell. The user is also in the shell with you. Run commands and explain your thought process. Guide the user through debugging step by step. Use the given structure to document the steps the user will execute in the shell and your commentary, notes, etc. as described"},
-                        ],
-                    )
+                    # {"role": "assistant", "content": "You are a helpful UNIX shell ghost, you live in a UNIX shell. The user is also in the shell with you. Run commands and explain your thought process. Guide the user through debugging step by step. Use the given structure to document the steps the user will execute in the shell and your commentary, notes, etc. as described"},
+                    thread_id = str(uuid.uuid4())
+                    threads[thread_id] = {
+                        "messages": [],
+                        "messages_received": [],
+                        "events": [],
+                        "events_received": [],
+                        "running": None,
+                    }
                     yield AGIEvent(
                         event_type=AGIEventType.NEW_THREAD_CREATED,
                         event_data=AGIEventNewThreadCreated(
                             agent_id=result.action_data.agent_id,
-                            thread_id=thread.id,
+                            thread_id=thread_id,
                         ),
                     )
                 elif result.action_type == AGIActionType.CHECK_THREAD:
+                    if threads.get(
+                        result.action_data.thread_id,
+                        {},
+                    ).get(
+                        "running",
+                        None
+                    ) is not None:
+                        threads[
+                            result.action_data.thread_id
+                        ]["running"]["task"].add_done_callback(
+                            threads[
+                                result.action_data.thread_id
+                            ]["running"]["event"].set,
+                        )
                     # Check status of run
-                    runs = [
-                        run
-                        async for run in client.beta.threads.runs.list(
-                            thread_id=result.action_data.thread_id,
-                            order="desc",
-                            limit=1,
-                        )
-                    ]
-                    run = runs[0]
-                    work[
-                        tg.create_task(
-                            client.beta.threads.runs.retrieve(
-                                thread_id=result.action_data.thread_id,
-                                run_id=run.id,
-                            ),
-                        )
-                    ] = (
-                        f"thread.runs.{run.id}",
-                        (result, run),
+                    # TODO finish
+                    work[tg.create_task(event.wait())] = (
+                        f"thread.runs.{run_id}",
+                        (result, None),
                     )
                 elif result.action_type == AGIActionType.RUN_THREAD:
-                    try:
-                        run = await client.beta.threads.runs.create(
-                            assistant_id=result.action_data.agent_id,
-                            thread_id=result.action_data.thread_id,
-                        )
-                    except openai.BadRequestError as error:
-                        # TODO Generic error handler pattern with plugin helpers
-                        if "already has an active run" in str(error):
-                            # Re-queue once run complete
-                            await waiting_event_stream_insert(
-                                (
-                                    AGIEventType.THREAD_RUN_COMPLETE,
-                                    make_async_lambda(result),
+                    run_status = "in_progress"
+                    if threads.get(
+                        result.action_data.thread_id,
+                        {},
+                    ).get(
+                        "running",
+                        None
+                    ) is None:
+                        snoop.pp(threads[result.action_data.thread_id]["messages"])
+                        def make_run_it(result, user_context):
+                            async def run_it():
+                                nonlocal result
+                                nonlocal user_context
+                                result = Runner.run_streamed(
+                                    starting_agent=agents[result.action_data.agent_id],
+                                    input=threads[result.action_data.thread_id]["messages"],
+                                    context=user_context,
                                 )
-                            )
-                            await action_stream_insert(
-                                AGIAction(
-                                    action_type=AGIActionType.CHECK_THREAD,
-                                    action_data=AGIActionCheckThread(
-                                        agent_id=result.action_data.agent_id,
-                                        thread_id=result.action_data.thread_id,
-                                    ),
+                                more_events = True
+                                events = threads[result.action_data.thread_id]["events"]
+                                try:
+                                    async for event in result.stream_events():
+                                        events.append(event)
+                                    events.append(result)
+                                finally:
+                                    more_events = False
+
+                                async def stream_get_thread_messages():
+                                    nonlocal more_events
+                                    nonlocal events
+                                    while more_events:
+                                        yield events.pop()
+
+                                thread_messages = stream_get_thread_messages()
+                                thread_messages_iter = thread_messages.__aiter__()
+                                work[
+                                    tg.create_task(
+                                        ignore_stopasynciteration(
+                                            thread_messages_iter.__anext__()
+                                        )
+                                    )
+                                ] = (
+                                    f"thread.messages.{result.action_data.thread_id}",
+                                    (action_new_thread_run, thread_messages_iter),
                                 )
-                            )
-                            continue
-                        raise
-                    yield AGIEvent(
-                        event_type=AGIEventType.NEW_THREAD_RUN_CREATED,
-                        event_data=AGIEventNewThreadRunCreated(
-                            agent_id=result.action_data.agent_id,
-                            thread_id=result.action_data.thread_id,
-                            run_id=run.id,
-                            run_status=run.status,
-                        ),
-                    )
-                    work[
-                        tg.create_task(
-                            client.beta.threads.runs.retrieve(
-                                thread_id=run.thread_id, run_id=run.id
+
+                                return result
+                            return run_it
+                        run_it = make_run_it(result, user_context)
+                        task = tg.create_task(
+                            run_it()
+                        )
+                        run_id = str(uuid.uuid4())
+                        threads[result.action_data.thread_id]["running"] = {
+                            "id": run_id,
+                            "task": task,
+                            "event": asyncio.Event(),
+                        }
+                        yield AGIEvent(
+                            event_type=AGIEventType.NEW_THREAD_RUN_CREATED,
+                            event_data=AGIEventNewThreadRunCreated(
+                                agent_id=result.action_data.agent_id,
+                                thread_id=result.action_data.thread_id,
+                                run_id=run_id,
+                                run_status=run_status,
+                            ),
+                        )
+                        work[task] = (
+                            f"thread.runs.{run_id}",
+                            (result, run_id),
+                        )
+                    else:
+                        # Re-queue once run complete
+                        await waiting_event_stream_insert(
+                            (
+                                AGIEventType.THREAD_RUN_COMPLETE,
+                                make_async_lambda(result),
                             )
                         )
-                    ] = (
-                        f"thread.runs.{run.id}",
-                        (result, run),
-                    )
-                elif result.action_type == AGIActionType.ADD_MESSAGE:
-                    try:
-                        message = await client.beta.threads.messages.create(
-                            thread_id=result.action_data.thread_id,
-                            role=result.action_data.message_role,
-                            content=result.action_data.message_content,
-                        )
-                    except openai.BadRequestError as error:
-                        # TODO Generic error handler pattern with plugin helpers
-                        if "while a run" in str(error) and "is active" in str(error):
-                            # Re-queue once run complete
-                            await waiting_event_stream_insert(
-                                (
-                                    AGIEventType.THREAD_RUN_COMPLETE,
-                                    make_async_lambda(result),
-                                )
-                            )
-                            # Check status of run
-                            runs = [
-                                run
-                                async for run in client.beta.threads.runs.list(
+                        await action_stream_insert(
+                            AGIAction(
+                                action_type=AGIActionType.CHECK_THREAD,
+                                action_data=AGIActionCheckThread(
+                                    agent_id=result.action_data.agent_id,
                                     thread_id=result.action_data.thread_id,
-                                    order="desc",
-                                    limit=1,
-                                )
-                            ]
-                            run = runs[0]
-                            work[
-                                tg.create_task(
-                                    client.beta.threads.runs.retrieve(
-                                        thread_id=result.action_data.thread_id,
-                                        run_id=run.id,
-                                    ),
-                                )
-                            ] = (
-                                f"thread.runs.{run.id}",
-                                (result, None),
+                                ),
                             )
-                            continue
-                        raise
+                        )
+                elif result.action_type == AGIActionType.ADD_MESSAGE:
+                    thread = threads.get(
+                        result.action_data.thread_id,
+                        None,
+                    )
+                    if thread is None:
+                        raise AGIThreadNotFoundError(result.action_data.thread_id)
+                    # result.to_input_list() + [{"role": "user", "content": }]
+                    thread["messages"].append(
+                        {
+                            "role": result.action_data.message_role,
+                            "content": result.action_data.message_content,
+                        }
+                    )
+                    message_id = len(thread["messages"]) - 1
                     yield AGIEvent(
                         event_type=AGIEventType.THREAD_MESSAGE_ADDED,
                         event_data=AGIEventThreadMessageAdded(
                             agent_id=result.action_data.agent_id,
                             thread_id=result.action_data.thread_id,
-                            message_id=message.id,
+                            message_id=message_id,
                             message_role=result.action_data.message_role,
                             message_content=result.action_data.message_content,
                         ),
                     )
             elif work_name.startswith("thread.runs."):
+                snoop.pp("Run completed", result, work_ctx)
+                # NOTE XXX WARNING _old_run is inconsistent right now
                 action_new_thread_run, _old_run = work_ctx
+                # TODO Support streaming of results
+                result.status = "completed"
                 if result.status == "completed":
                     yield AGIEvent(
                         event_type=AGIEventType.THREAD_RUN_COMPLETE,
                         event_data=AGIEventThreadRunComplete(
                             agent_id=action_new_thread_run.action_data.agent_id,
-                            thread_id=result.thread_id,
-                            run_id=result.id,
+                            thread_id=action_new_thread_run.action_data.thread_id,
+                            # run_id=action_new_thread_run.action_data.id,
+                            run_id=None,
                             run_status=result.status,
                         ),
                     )
                     # TODO Send this similar to seed back to a feedback queue to
                     # process as an action for get thread messages
-                    thread_messages = client.beta.threads.messages.list(
-                        thread_id=result.thread_id,
-                    )
+                    async def get_thread_messages(action_new_thread_run):
+                        with snoop():
+                            thread = threads[
+                                action_new_thread_run.action_data.thread_id
+                            ]
+                            thread_task = thread["running"]["task"]
+                            if not thread_task.done():
+                                await thread["running"]["event"].wait()
+                            thread_result = thread_task.result()
+                            thread["messages"].extend(
+                                thread_result.to_input_list()
+                            )
+                            # TODO XXX DEBUG XXX TODO REMOVE
+                            snoop.pp(thread_result.final_output)
+                            for event in threads[
+                                action_new_thread_run.action_data.thread_id
+                            ]["events"]:
+                                yield event
+                    thread_messages = get_thread_messages(action_new_thread_run)
                     thread_messages_iter = thread_messages.__aiter__()
                     work[
                         tg.create_task(
@@ -3704,7 +3973,7 @@ async def agent_openai(
                             )
                         )
                     ] = (
-                        f"thread.messages.{result.thread_id}",
+                        f"thread.messages.{action_new_thread_run.action_data.thread_id}",
                         (action_new_thread_run, thread_messages_iter),
                     )
                 elif result.status in ("queued", "in_progress"):
@@ -3717,17 +3986,18 @@ async def agent_openai(
                             run_status=result.status,
                         ),
                     )
+                    threads[
+                        result.action_data.thread_id
+                    ]["running"]["task"].add_done_callback(event.set)
+                    # Check status of run
                     work[
                         tg.create_task(
-                            asyncio_sleep_for_then_coro(
-                                5,
-                                client.beta.threads.runs.retrieve(
-                                    thread_id=result.thread_id, run_id=result.id
-                                ),
-                            )
+                            threads[
+                                result.action_data.thread_id
+                            ]["running"]["event"].wait()
                         )
                     ] = (
-                        f"thread.runs.{run.id}",
+                        f"thread.runs.{result.id}",
                         (action_new_thread_run, result),
                     )
                 elif result.status == "failed":
@@ -3742,108 +4012,6 @@ async def agent_openai(
                             last_error=result.last_error,
                         ),
                     )
-                elif result.status == "requires_action":
-                    for tool_call in result.required_action.submit_tool_outputs.tool_calls:
-                        if tool_call.id in tool_calls:
-                            continue
-                        tool_calls[tool_call.id] = True
-                        # TODO Plugins for tools
-                        if tool_call.function.name == "RetreiveInformation":
-                            tool_arguments = RetreiveInformation.model_validate_json(tool_call.function.arguments)
-                            snoop.pp(tool_arguments)
-
-                            def make_do_file_search(result):
-                                async def do_file_search():
-                                    assistant = (
-                                        await openai.resources.beta.assistants.AsyncAssistants(
-                                            client
-                                        ).retrieve(
-                                            assistant_id=result.assistant_id,
-                                        )
-                                    )
-                                    # TODO KVM nested style instead of this manual
-                                    # single level rigid nesting
-                                    retrieval_assistant = (
-                                        await openai.resources.beta.assistants.AsyncAssistants(
-                                            client
-                                        ).retrieve(
-                                            assistant_id=assistant.metadata["retrieval_assistant_id"],
-                                        )
-                                    )
-
-                                    thread = await client.beta.threads.create(
-                                      messages=[
-                                        {
-                                          "role": "user",
-                                          "content": f"run file search to respond to: {tool_call.function.arguments}",
-                                        }
-                                      ]
-                                    )
-
-                                    # The thread now has a vector store with that file in its tool resources.
-                                    snoop.pp(thread.tool_resources.file_search)
-
-                                    run = await client.beta.threads.runs.create_and_poll(
-                                        thread_id=thread.id,
-                                        assistant_id=retrieval_assistant.id,
-                                        poll_interval_ms=1000,
-                                    )
-                                    snoop.pp(run)
-
-                                    messages = list(
-                                        [
-                                            message
-                                            async for message in client.beta.threads.messages.list(
-                                                thread_id=thread.id,
-                                                run_id=run.id,
-                                            )
-                                        ]
-                                    )
-
-                                    message_content = messages[0].content[0].text
-                                    annotations = message_content.annotations
-                                    citations = []
-                                    for index, annotation in enumerate(annotations):
-                                        message_content.value = message_content.value.replace(annotation.text, f"[{index}]")
-                                        if file_citation := getattr(annotation, "file_citation", None):
-                                            cited_file = await client.files.retrieve(file_citation.file_id)
-                                            citations.append(f"[{index}] {cited_file.filename}")
-
-                                    llm_response = "\n".join([message_content.value, "", *citations])
-                                    print(llm_response)
-                                    tool_outputs = []
-                                    tool_outputs.append({
-                                        "tool_call_id": tool_call.id,
-                                        "output": llm_response
-                                    })
-                                    run = await client.beta.threads.runs.submit_tool_outputs_and_poll(
-                                        thread_id=result.thread_id,
-                                        run_id=result.id,
-                                        tool_outputs=tool_outputs
-                                    )
-                                    snoop.pp(run)
-                                    await action_stream_insert(
-                                        AGIAction(
-                                            action_type=AGIActionType.CHECK_THREAD,
-                                            action_data=AGIActionCheckThread(
-                                                agent_id=assistant.id,
-                                                thread_id=result.thread_id,
-                                            ),
-                                        )
-                                    )
-                                return do_file_search
-
-                            # await call_tool_retreive_information(**tool_arguments)
-                            await waiting_event_stream_insert(
-                                (
-                                    # OR is array, AND is dict values
-                                    [
-                                        AGIEventType.NEW_AGENT_CREATED,
-                                        AGIEventType.EXISTING_AGENT_RETRIEVED,
-                                    ],
-                                    make_do_file_search(result),
-                                )
-                            )
                 else:
                     snoop.pp(
                         AGIEventType.THREAD_RUN_EVENT_WITH_UNKNOWN_STATUS,
@@ -3866,7 +4034,12 @@ async def agent_openai(
                 # TODO Keep track of what the last response received was so that
                 # we can create_task as many times as there might be responses
                 # in case there are multiple within one run.
-                """
+                thread = threads.get(
+                    result.action_data.thread_id,
+                    None,
+                )
+                if thread is None:
+                    raise AGIThreadNotFoundError(result.action_data.thread_id)
                 work[
                     tg.create_task(
                         ignore_stopasynciteration(
@@ -3874,23 +4047,23 @@ async def agent_openai(
                         )
                     )
                 ] = (work_name, work_ctx)
-                """
-                for content in result.content:
-                    # snoop.pp(result, content)
-                    # print(response.choices[0].message.tool_calls[0].function)
-                    if content.type == "text":
-                        yield AGIEvent(
-                            event_type=AGIEventType.NEW_THREAD_MESSAGE,
-                            event_data=AGIEventNewThreadMessage(
-                                agent_id=action_new_thread_run.action_data.agent_id,
-                                thread_id=result.thread_id,
-                                message_role="agent"
-                                if result.role == "assistant"
-                                else "user",
-                                message_content_type=content.type,
-                                message_content=content.text.value,
-                            ),
-                        )
+                if not result["id"]:
+                    result["id"] = str(uuid.uuid4())
+                if result["id"] not in thread["messages_received"]:
+                    continue
+                if content.type == "text":
+                    yield AGIEvent(
+                        event_type=AGIEventType.NEW_THREAD_MESSAGE,
+                        event_data=AGIEventNewThreadMessage(
+                            agent_id=action_new_thread_run.action_data.agent_id,
+                            thread_id=result.thread_id,
+                            message_role="agent"
+                            if result.role == "assistant"
+                            else "user",
+                            message_content_type=content.type,
+                            message_content=content.text.value,
+                        ),
+                    )
         except Exception as error:
             traceback.print_exc()
             yield AGIEvent(
@@ -4097,10 +4270,17 @@ async def main(
     pane: Optional[libtmux.Pane] = None,
 ):
     if log is not None:
-        logging.basicConfig(level=log)
+        # logging.basicConfig(level=log)
+        pass
 
     if not kvstore:
         kvstore = KVStoreKeyring({"service_name": kvstore_service_name})
+
+    user_context = UserContext(
+        tmux_context=TmuxContext(
+            session=None if pane is None else pane.session,
+        ),
+    )
 
     kvstore_key_agent_id = f"agents.{agi_name}.id"
     # snoop.pp(kvstore_key_agent_id, await kvstore.get(kvstore_key_agent_id, None))
@@ -4122,7 +4302,7 @@ async def main(
     agents = AsyncioLockedCurrentlyDict()
     threads = AsyncioLockedCurrentlyDict()
 
-    async with kvstore, asyncio.TaskGroup() as tg:
+    async with kvstore, asyncio.TaskGroup() as tg, contextlib.AsyncExitStack() as async_exit_stack:
         # Raw Input Action Stream
         unvalidated_user_input_action_stream = pdb_action_stream(
             tg,
@@ -4161,13 +4341,10 @@ async def main(
             await action_stream_insert(action)
 
         if openai_api_key:
-            async def mock_agent_openai(*args, **kwargs):
-                await asyncio.Event().wait()
-                yield
-            # TODO Update vector beta code to current API state
-            # agent_events = agent_openai(
-            agent_events = mock_agent_openai(
+            agent_events = agent_openai(
                 tg,
+                async_exit_stack,
+                user_context,
                 agi_name,
                 kvstore,
                 action_stream,
@@ -4701,7 +4878,7 @@ async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
         pane.send_keys('chmod 700 "${CALLER_PATH}/entrypoint.sh"', enter=True)
 
         workflow = PolicyEngineWorkflow(
-            on={},
+            on=["push"],
             name=None,
             jobs={
                 "ssh": PolicyEngineWorkflowJob(
