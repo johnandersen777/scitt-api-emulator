@@ -3822,30 +3822,25 @@ async def agent_openai(
                         "running",
                         None
                     ) is None:
-                        snoop.pp(threads[result.action_data.thread_id]["messages"])
+                        action_data_run_thread = result.action_data
+                        # snoop.pp(threads[action_data_run_thread.thread_id]["messages"])
                         def make_run_it(result, user_context):
                             async def run_it():
                                 nonlocal result
                                 nonlocal user_context
                                 result = Runner.run_streamed(
-                                    starting_agent=agents[result.action_data.agent_id],
-                                    input=threads[result.action_data.thread_id]["messages"],
+                                    starting_agent=agents[action_data_run_thread.agent_id],
+                                    input=threads[action_data_run_thread.thread_id]["messages"],
                                     context=user_context,
                                 )
                                 more_events = True
-                                events = threads[result.action_data.thread_id]["events"]
-                                try:
-                                    async for event in result.stream_events():
-                                        events.append(event)
-                                    events.append(result)
-                                finally:
-                                    more_events = False
-
+                                event_queue = asyncio.Queue()
+                                events = threads[action_data_run_thread.thread_id]["events"]
                                 async def stream_get_thread_messages():
                                     nonlocal more_events
-                                    nonlocal events
+                                    nonlocal event_queue
                                     while more_events:
-                                        yield events.pop()
+                                        yield await event_queue.get()
 
                                 thread_messages = stream_get_thread_messages()
                                 thread_messages_iter = thread_messages.__aiter__()
@@ -3856,9 +3851,19 @@ async def agent_openai(
                                         )
                                     )
                                 ] = (
-                                    f"thread.messages.{result.action_data.thread_id}",
-                                    (action_new_thread_run, thread_messages_iter),
+                                    f"thread.messages.{action_data_run_thread.thread_id}",
+                                    (action_data_run_thread, thread_messages_iter),
                                 )
+
+                                try:
+                                    async for event in result.stream_events():
+                                        events.append(event)
+                                        await event_queue.put(event)
+                                    events.append(result)
+                                    await event_queue.put(result)
+                                finally:
+                                    await event_queue.join()
+                                    more_events = False
 
                                 return result
                             return run_it
@@ -3909,7 +3914,6 @@ async def agent_openai(
                     )
                     if thread is None:
                         raise AGIThreadNotFoundError(result.action_data.thread_id)
-                    # result.to_input_list() + [{"role": "user", "content": }]
                     thread["messages"].append(
                         {
                             "role": result.action_data.message_role,
@@ -3928,7 +3932,7 @@ async def agent_openai(
                         ),
                     )
             elif work_name.startswith("thread.runs."):
-                snoop.pp("Run completed", result, work_ctx)
+                snoop.pp("Run completed") # , result, work_ctx)
                 # NOTE XXX WARNING _old_run is inconsistent right now
                 action_new_thread_run, _old_run = work_ctx
                 # TODO Support streaming of results
@@ -3943,38 +3947,6 @@ async def agent_openai(
                             run_id=None,
                             run_status=result.status,
                         ),
-                    )
-                    # TODO Send this similar to seed back to a feedback queue to
-                    # process as an action for get thread messages
-                    async def get_thread_messages(action_new_thread_run):
-                        with snoop():
-                            thread = threads[
-                                action_new_thread_run.action_data.thread_id
-                            ]
-                            thread_task = thread["running"]["task"]
-                            if not thread_task.done():
-                                await thread["running"]["event"].wait()
-                            thread_result = thread_task.result()
-                            thread["messages"].extend(
-                                thread_result.to_input_list()
-                            )
-                            # TODO XXX DEBUG XXX TODO REMOVE
-                            snoop.pp(thread_result.final_output)
-                            for event in threads[
-                                action_new_thread_run.action_data.thread_id
-                            ]["events"]:
-                                yield event
-                    thread_messages = get_thread_messages(action_new_thread_run)
-                    thread_messages_iter = thread_messages.__aiter__()
-                    work[
-                        tg.create_task(
-                            ignore_stopasynciteration(
-                                thread_messages_iter.__anext__()
-                            )
-                        )
-                    ] = (
-                        f"thread.messages.{action_new_thread_run.action_data.thread_id}",
-                        (action_new_thread_run, thread_messages_iter),
                     )
                 elif result.status in ("queued", "in_progress"):
                     yield AGIEvent(
@@ -4028,18 +4000,18 @@ async def agent_openai(
                         ),
                     )
             elif work_name.startswith("thread.messages."):
-                action_new_thread_run, thread_messages_iter = work_ctx
+                action_data_run_thread, thread_messages_iter = work_ctx
                 _, _, thread_id = work_name.split(".", maxsplit=3)
                 # The first time we iterate is the most recent response
                 # TODO Keep track of what the last response received was so that
                 # we can create_task as many times as there might be responses
                 # in case there are multiple within one run.
                 thread = threads.get(
-                    result.action_data.thread_id,
+                    action_data_run_thread.thread_id,
                     None,
                 )
                 if thread is None:
-                    raise AGIThreadNotFoundError(result.action_data.thread_id)
+                    raise AGIThreadNotFoundError(action_data_run_thread.thread_id)
                 work[
                     tg.create_task(
                         ignore_stopasynciteration(
@@ -4047,6 +4019,20 @@ async def agent_openai(
                         )
                     )
                 ] = (work_name, work_ctx)
+                if getattr(result, "is_complete", False):
+                    snoop.pp("complete", result.final_output)
+                    yield AGIEvent(
+                        event_type=AGIEventType.NEW_THREAD_MESSAGE,
+                        event_data=AGIEventNewThreadMessage(
+                            agent_id=action_data_run_thread.agent_id,
+                            thread_id=action_data_run_thread.thread_id,
+                            message_role="agent",
+                            message_content_type=f"agi.class/{result.final_output.__class__.__qualname__}",
+                            message_content=result.final_output,
+                        ),
+                    )
+                """
+                snoop.pp("message iter", result)
                 if not result["id"]:
                     result["id"] = str(uuid.uuid4())
                 if result["id"] not in thread["messages_received"]:
@@ -4055,8 +4041,8 @@ async def agent_openai(
                     yield AGIEvent(
                         event_type=AGIEventType.NEW_THREAD_MESSAGE,
                         event_data=AGIEventNewThreadMessage(
-                            agent_id=action_new_thread_run.action_data.agent_id,
-                            thread_id=result.thread_id,
+                            agent_id=action_data_run_thread.agent_id,
+                            thread_id=action_data_run_thread.thread_id,
                             message_role="agent"
                             if result.role == "assistant"
                             else "user",
@@ -4064,6 +4050,7 @@ async def agent_openai(
                             message_content=content.text.value,
                         ),
                     )
+                """
         except Exception as error:
             traceback.print_exc()
             yield AGIEvent(
@@ -4192,8 +4179,9 @@ async def DEBUG_TEMP_message_handler(user_name,
                                      agent_event,
                                      pane = None):
     # TODO https://rich.readthedocs.io/en/stable/markdown.html
+    # TODO Output non-workflow responses
     if (
-        agent_event.event_data.message_content_type == "text"
+        agent_event.event_data.message_content_type == f"agi.class/{PolicyEngineWorkflow.__qualname__}"
         and agent_event.event_data.message_role == "agent"
     ):
         # TODOTODOTODO
@@ -4202,7 +4190,7 @@ async def DEBUG_TEMP_message_handler(user_name,
             # pane.send_keys(f"{agent_event.event_data.message_content}")
             # pane.send_keys(f"{agent_event.event_data.message_content}")
             # print()
-            snoop.pp(json.loads(agent_event.event_data.message_content))
+            # snoop.pp(json.loads(agent_event.event_data.message_content))
             session = pane.window.session
             tempdir_lookup_env_var = f'TEMPDIR_ENV_VAR_TMUX_WINDOW_{session.active_window.id.replace("@", "")}'
             tempdir_env_var  = pane.window.session.show_environment()[tempdir_lookup_env_var]
@@ -4213,11 +4201,8 @@ async def DEBUG_TEMP_message_handler(user_name,
             # for take off (aka workload id and exec in phase 0). Executing the
             # policy aka the workflow (would be the one we insert to once
             # paths can be mapped to poliy engine workflows easily
-            response = AGIOpenAIAssistantResponse.model_validate_json(
-                agent_event.event_data.message_content
-            )
             proposed_workflow_contents = yaml.dump(
-                json.loads(response.workflow.model_dump_json()),
+                json.loads(agent_event.event_data.message_content.model_dump_json()),
                 default_flow_style=False,
                 sort_keys=True,
             )
@@ -4227,7 +4212,7 @@ async def DEBUG_TEMP_message_handler(user_name,
                         inputs={},
                         context={},
                         stack={},
-                        workflow=response.workflow,
+                        workflow=agent_event.event_data.message_content,
                     ).model_dump_json(),
                 )
             )
@@ -4511,7 +4496,7 @@ async def main(
                         pane.send_keys(
                             textwrap.dedent(
                                 f"""
-                                echo "Hello Alice. Shall we play a game? My name is $USER. Please run nmap against all machines on all conntected networks. Here are some details about the system we are on: $(echo $(echo $(cat /usr/lib/os-release || cat /etc/os-release)))" | tee -a ${agi_name.upper()}_INPUT
+                                echo "Hello Alice. Shall we play a game? My name is $USER. Please run nmap against localhost. Here are some details about the system we are on: $(echo $(echo $(cat /usr/lib/os-release || cat /etc/os-release)))" | tee -a ${agi_name.upper()}_INPUT
                                 """.strip(),
                             ),
                             enter=False,
@@ -4635,57 +4620,36 @@ async def main(
                         )
                     )
                 )
-                if (
-                    isinstance(user_input, str)
-                    and user_input.startswith("AGI_ACTION_TYPE.INGEST_FILE:")
-                ):
-                    file_path = user_input.split("AGI_ACTION_TYPE.INGEST_FILE:", maxsplit=1)[1]
-                    if pathlib.Path(file_path).is_file():
-                        waiting.append(
-                            (
-                                AGIEventType.NEW_THREAD_CREATED,
-                                async_lambda(
-                                    lambda: AGIAction(
-                                        action_type=AGIActionType.INGEST_FILE,
-                                        action_data=AGIActionIngestFile(
-                                            agent_id=agents.currently.state_data.agent_id,
-                                            file_path=file_path,
-                                        ),
-                                    )
-                                )
-                            )
-                        )
-                else:
-                    waiting.append(
-                        (
-                            AGIEventType.NEW_THREAD_CREATED,
-                            async_lambda(
-                                lambda: AGIAction(
-                                    action_type=AGIActionType.ADD_MESSAGE,
-                                    action_data=AGIActionAddMessage(
-                                        agent_id=agents.currently.state_data.agent_id,
-                                        thread_id=threads.currently.state_data.thread_id,
-                                        message_role="user",
-                                        message_content=user_input,
-                                    ),
-                                )
+                waiting.append(
+                    (
+                        AGIEventType.NEW_THREAD_CREATED,
+                        async_lambda(
+                            lambda: AGIAction(
+                                action_type=AGIActionType.ADD_MESSAGE,
+                                action_data=AGIActionAddMessage(
+                                    agent_id=agents.currently.state_data.agent_id,
+                                    thread_id=threads.currently.state_data.thread_id,
+                                    message_role="user",
+                                    message_content=user_input,
+                                ),
                             )
                         )
                     )
-                    waiting.append(
-                        (
-                            AGIEventType.THREAD_MESSAGE_ADDED,
-                            async_lambda(
-                                lambda: AGIAction(
-                                    action_type=AGIActionType.RUN_THREAD,
-                                    action_data=AGIActionRunThread(
-                                        agent_id=threads.currently.state_data.agent_id,
-                                        thread_id=threads.currently.state_data.thread_id,
-                                    ),
-                                )
-                            ),
+                )
+                waiting.append(
+                    (
+                        AGIEventType.THREAD_MESSAGE_ADDED,
+                        async_lambda(
+                            lambda: AGIAction(
+                                action_type=AGIActionType.RUN_THREAD,
+                                action_data=AGIActionRunThread(
+                                    agent_id=threads.currently.state_data.agent_id,
+                                    thread_id=threads.currently.state_data.thread_id,
+                                ),
+                            )
                         ),
-                    )
+                    ),
+                )
             # Run actions which have are waiting for an event which was seen
             still_waiting = []
             while waiting:
