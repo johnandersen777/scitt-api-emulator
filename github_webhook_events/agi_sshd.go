@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"golang.org/x/crypto/ssh"
@@ -29,6 +30,7 @@ import (
 type forward struct {
 	listener  net.Listener
 	localPath string
+	rawPath   string
 }
 
 func main() {
@@ -126,7 +128,7 @@ func handleSSH(raw net.Conn, cfg *ssh.ServerConfig) {
 			}
 
 			mu.Lock()
-			forwards[base] = &forward{listener, localPath}
+			forwards[base] = &forward{listener, localPath, p.SocketPath}
 			count := len(forwards)
 			mu.Unlock()
 
@@ -210,6 +212,9 @@ func notifyAGI(ctx context.Context, mu *sync.Mutex, forwards map[string]*forward
 	data := make(map[string]string, len(forwards))
 	for base, f := range forwards {
 		data[base] = f.localPath
+		if strings.HasSuffix(f.rawPath, "input.sock") {
+			data["client-side-input.sock"] = f.rawPath
+		}
 	}
 	mu.Unlock()
 

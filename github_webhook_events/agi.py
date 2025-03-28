@@ -6,7 +6,7 @@ python -m uvicorn "agi:app" --uds "/tmp/agi.sock"
 
 AGI_SOCK=/tmp/agi.sock go run agi_sshd.go
 
-ssh -NnT -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PasswordAuthentication=no -R /tmux.sock:$(echo $TMUX | sed -e 's/,.*//g') -R /input.sock:$(mktemp -d)/input.sock user@localhost
+export INPUT_SOCK="$(mktemp -d)/input.sock"; ssh -NnT -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PasswordAuthentication=no -R /tmux.sock:$(echo $TMUX | sed -e 's/,.*//g') -R "${INPUT_SOCK}:${INPUT_SOCK}" user@localhost
 
 
 gh auth refresh -h github.com -s admin:public_key
@@ -3294,6 +3294,12 @@ def make_argparse_parser(argv=None):
         type=str,
     )
     parser.add_argument(
+        "--client-side-input-socket-path",
+        dest="client_side_input_socket_path",
+        default=None,
+        type=str,
+    )
+    parser.add_argument(
         "--agi-name",
         dest="agi_name",
         default="alice",
@@ -4128,11 +4134,13 @@ async def read_unix_socket_lines(path):
         await writer.wait_closed()
 
 
-async def pdb_action_stream(tg, user_name, agi_name, agents, threads, pane: Optional[libtmux.Pane] = None):
+async def pdb_action_stream(tg, user_name, agi_name, agents, threads, pane: Optional[libtmux.Pane] = None, input_socket_path: Optional[str] = None):
     # TODO Take ALICE_INPUT from args
+    alice_input_sock = input_socket_path
     if pane is not None:
         alice_input = pane.window.session.show_environment()[f"{agi_name.upper()}_INPUT"]
-        alice_input_sock = pane.window.session.show_environment()[f"{agi_name.upper()}_INPUT_SOCK"]
+        if alice_input_sock is None:
+            alice_input_sock = pane.window.session.show_environment()[f"{agi_name.upper()}_INPUT_SOCK"]
         alice_input_last_line = pane.window.session.show_environment()[f"{agi_name.upper()}_INPUT_LAST_LINE"]
 
     if pathlib.Path(alice_input_sock).is_socket():
@@ -4253,6 +4261,8 @@ async def main(
     openai_api_key: str = None,
     openai_base_url: Optional[str] = None,
     pane: Optional[libtmux.Pane] = None,
+    input_socket_path: Optional[str] = None,
+    client_side_input_socket_path: Optional[str] = None,
 ):
     if log is not None:
         # logging.basicConfig(level=log)
@@ -4296,6 +4306,7 @@ async def main(
             agents,
             threads,
             pane=pane,
+            input_socket_path=input_socket_path,
         )
 
         # Waiting Event Stream and Callbacks
@@ -4450,7 +4461,7 @@ async def main(
                         # pane.send_keys(f'', enter=True)
 
                         pane.send_keys(f'export {agi_name.upper()}_INPUT="' + '${CALLER_PATH}/input.txt"', enter=True)
-                        pane.send_keys(f'export {agi_name.upper()}_INPUT_SOCK="' + '${CALLER_PATH}/input.sock"', enter=True)
+                        pane.send_keys(f'export {agi_name.upper()}_INPUT_SOCK="{client_side_input_socket_path}"', enter=True)
                         pane.send_keys(f'export {agi_name.upper()}_INPUT_LAST_LINE="' + '${CALLER_PATH}/input-last-line.txt"', enter=True)
 
                         # TODO
@@ -4702,7 +4713,7 @@ def a_shell_for_a_ghost_send_keys(pane, send_string, erase_after=None):
             time.sleep(0.01)
 
 
-async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
+async def tmux_test(*args, socket_path=None, input_socket_path=None, client_side_input_socket_path: Optional[str] = None, **kwargs):
     pane = None
     tempdir = None
     possible_tempdir = tempdir
@@ -4792,7 +4803,7 @@ async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
         session.set_environment(tempdir_env_var, tempdir)
 
         session.set_environment(f"{agi_name.upper()}_INPUT", str(pathlib.Path(tempdir, "input.txt")))
-        session.set_environment(f"{agi_name.upper()}_INPUT_SOCK", str(input_socket_path))
+        session.set_environment(f"{agi_name.upper()}_INPUT_SOCK", client_side_input_socket_path)
         session.set_environment(f"{agi_name.upper()}_INPUT_LAST_LINE", str(pathlib.Path(tempdir, "input-last-line.txt")))
 
         pane.send_keys(
@@ -4946,7 +4957,7 @@ async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
             time.sleep(0.1)
 
         pane.send_keys(f"export {agi_name.upper()}_INPUT=" + str(pathlib.Path(tempdir, "input.txt")), enter=True)
-        pane.send_keys(f"export {agi_name.upper()}_INPUT_SOCK=" + str(input_socket_path), enter=True)
+        pane.send_keys(f'export {agi_name.upper()}_INPUT_SOCK="{client_side_input_socket_path}"', enter=True)
         pane.send_keys(f"export {agi_name.upper()}_INPUT_LAST_LINE=" + str(pathlib.Path(tempdir, "input-last-line.txt")), enter=True)
         pane.send_keys(f'rm -fv ${agi_name.upper()}_INPUT_SOCK', enter=True)
         pane.send_keys(f'ln -s ${agi_name.upper()}_INPUT_SOCK', enter=True)
@@ -4955,7 +4966,7 @@ async def tmux_test(*args, socket_path=None, input_socket_path=None, **kwargs):
 
         pane.send_keys(f'set +x', enter=True)
 
-        await main(*args, pane=pane, **kwargs)
+        await main(*args, pane=pane, input_socket_path=input_socket_path, client_side_input_socket_path=client_side_input_socket_path, **kwargs)
     finally:
         with contextlib.suppress(Exception):
             if pane is not None:
@@ -4977,7 +4988,7 @@ async def lifespan_logging(app):
 app = FastAPI(lifespan=lifespan_logging)
 
 
-def run_tmux_attach(socket_path, input_socket_path):
+def run_tmux_attach(socket_path, input_socket_path, client_side_input_socket_path):
     cmd = [
         sys.executable,
         "-u",
@@ -4986,6 +4997,8 @@ def run_tmux_attach(socket_path, input_socket_path):
         socket_path,
         "--input-socket-path",
         input_socket_path,
+        "--client-side-input-socket-path",
+        client_side_input_socket_path,
         "--agi-name",
         # TODO Something secure here, scitt URN and lookup for PS1?
         f"alice{str(uuid.uuid4()).split('-')[4]}",
@@ -5016,11 +5029,12 @@ async def connect_and_read(socket_path: str, sleep_time: float = 0.1):
 class RequestConnectTMUX(BaseModel):
     socket_tmux_path: str = Field(alias="tmux.sock")
     socket_input_path: str = Field(alias="input.sock")
+    socket_client_side_input_path: str = Field(alias="client-side-input.sock")
 
 
 @app.post("/connect/tmux")
 async def connect(request_connect_tmux: RequestConnectTMUX, background_tasks: BackgroundTasks):
-    background_tasks.add_task(run_tmux_attach, request_connect_tmux.socket_tmux_path, request_connect_tmux.socket_input_path)
+    background_tasks.add_task(run_tmux_attach, request_connect_tmux.socket_tmux_path, request_connect_tmux.socket_input_path, request_connect_tmux.socket_client_side_input_path)
     return {
         "connected": True,
     }
