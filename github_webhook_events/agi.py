@@ -3019,20 +3019,20 @@ async def asyncio_sleep_for_then_coro(sleep_time, coro):
 
 
 class AGIEventType(enum.Enum):
-    ERROR = enum.auto()
-    END_EVENTS = enum.auto()
-    INTERNAL_RE_QUEUE = enum.auto()
-    NEW_AGENT_CREATED = enum.auto()
-    EXISTING_AGENT_RETRIEVED = enum.auto()
-    FILE_INGESTED = enum.auto()
-    NEW_THREAD_CREATED = enum.auto()
-    NEW_THREAD_RUN_CREATED = enum.auto()
-    NEW_THREAD_MESSAGE = enum.auto()
-    THREAD_MESSAGE_ADDED = enum.auto()
-    THREAD_RUN_COMPLETE = enum.auto()
-    THREAD_RUN_IN_PROGRESS = enum.auto()
-    THREAD_RUN_FAILED = enum.auto()
-    THREAD_RUN_EVENT_WITH_UNKNOWN_STATUS = enum.auto()
+    ERROR = "error"
+    END_EVENTS = "end_events"
+    INTERNAL_RE_QUEUE = "internal_re_queue"
+    NEW_AGENT_CREATED = "new_agent_created"
+    EXISTING_AGENT_RETRIEVED = "existing_agent_retrieved"
+    FILE_INGESTED = "file_ingested"
+    NEW_THREAD_CREATED = "new_thread_created"
+    NEW_THREAD_RUN_CREATED = "new_thread_run_created"
+    NEW_THREAD_MESSAGE = "new_thread_message"
+    THREAD_MESSAGE_ADDED = "thread_message_added"
+    THREAD_RUN_COMPLETE = "thread_run_complete"
+    THREAD_RUN_IN_PROGRESS = "thread_run_in_progress"
+    THREAD_RUN_FAILED = "thread_run_failed"
+    THREAD_RUN_EVENT_WITH_UNKNOWN_STATUS = "thread_run_event_with_unknown_status"
 
 
 @dataclasses.dataclass
@@ -3122,12 +3122,12 @@ class AGIEventThreadMessageAdded:
 
 
 class AGIActionType(enum.Enum):
-    NEW_AGENT = enum.auto()
-    INGEST_FILE = enum.auto()
-    ADD_MESSAGE = enum.auto()
-    NEW_THREAD = enum.auto()
-    RUN_THREAD = enum.auto()
-    CHECK_THREAD = enum.auto()
+    NEW_AGENT = "new_agent"
+    INGEST_FILE = "ingest_file"
+    ADD_MESSAGE = "add_message"
+    NEW_THREAD = "new_thread"
+    RUN_THREAD = "run_thread"
+    CHECK_THREAD = "check_thread"
 
 
 @dataclasses.dataclass
@@ -3178,8 +3178,8 @@ AGIActionStream = NewType("AGIActionStream", AsyncIterator[AGIAction])
 
 
 class AGIStateType(enum.Enum):
-    AGENT = enum.auto()
-    THREAD = enum.auto()
+    AGENT = "agent"
+    THREAD = "thread"
 
 
 @dataclasses.dataclass
