@@ -6,7 +6,7 @@ python -m uvicorn "agi:app" --uds "/tmp/agi.sock"
 
 AGI_SOCK=/tmp/agi.sock go run agi_sshd.go
 
-export INPUT_SOCK="$(mktemp -d)/input.sock"; export OUTPUT_SOCK="$(mktemp -d)/text-output.sock"; export NDJSON_OUTPUT_SOCK="$(mktemp -d)/ndjson-output.sock"; ssh -NnT -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PasswordAuthentication=no -R /tmux.sock:$(echo $TMUX | sed -e 's/,.*//g') -R "${OUTPUT_SOCK}:${OUTPUT_SOCK}" -R "${NDJSON_OUTPUT_SOCK}:${NDJSON_OUTPUT_SOCK}" -R "${INPUT_SOCK}:${INPUT_SOCK}" user@localhost
+export INPUT_SOCK="$(mktemp -d)/input.sock"; export OUTPUT_SOCK="$(mktemp -d)/text-output.sock"; export NDJSON_OUTPUT_SOCK="$(mktemp -d)/ndjson-output.sock"; export MCP_REVERSE_PROXY_SOCK="$(mktemp -d)/mcp-reverse-proxy.sock"; ssh -NnT -p 2222 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PasswordAuthentication=no -R /tmux.sock:$(echo $TMUX | sed -e 's/,.*//g') -R "${OUTPUT_SOCK}:${OUTPUT_SOCK}" -R "${NDJSON_OUTPUT_SOCK}:${NDJSON_OUTPUT_SOCK}" -R "${MCP_REVERSE_PROXY_SOCK}:${MCP_REVERSE_PROXY_SOCK}" -R "${INPUT_SOCK}:${INPUT_SOCK}" user@localhost
 
 
 gh auth refresh -h github.com -s admin:public_key
@@ -3324,6 +3324,18 @@ def make_argparse_parser(argv=None):
         type=str,
     )
     parser.add_argument(
+        "--mcp-reverse-proxy-socket-path",
+        dest="mcp_reverse_proxy_socket_path",
+        default=None,
+        type=str,
+    )
+    parser.add_argument(
+        "--client-side-mcp-reverse-proxy-socket-path",
+        dest="client_side_mcp_reverse_proxy_socket_path",
+        default=None,
+        type=str,
+    )
+    parser.add_argument(
         "--agi-name",
         dest="agi_name",
         default="alice",
@@ -3650,6 +3662,68 @@ class AGIThreadNotFoundError(Exception):
     pass
 
 
+import http
+import httpx
+
+
+class CaddyConfigLoadError(Exception):
+    pass
+
+
+async def caddy_config_update(mcp_reverse_proxy_socket_path, slug):
+    transport = httpx.AsyncHTTPTransport(uds=mcp_reverse_proxy_socket_path)
+    async with httpx.AsyncClient(transport=transport) as client:
+        # TODO Booooooooo timeout booooooo
+        time = 0
+        success = False
+        while not success and time < 5:
+            try:
+                await client.get("http://127.0.0.1/config/")
+                success = True
+            except httpx.RemoteProtocolError:
+                await asyncio.sleep(0.1)
+                time += 0.1
+        response = await client.get(
+            "http://127.0.0.1/config/",
+        )
+        caddy_config = response.json()
+        exists = False
+        proxy_route_caddy_admin = None
+        for route in caddy_config['apps']['http']['servers']['srv0']['routes']:
+            for match in route['match']:
+                for host in match['host']:
+                    if host == '127.0.0.1':
+                        proxy_route_caddy_admin = route
+                    elif host == slug:
+                        exists = True
+        if exists:
+            return
+        proxy_route_new = json.loads(
+            json.dumps(
+                proxy_route_caddy_admin,
+            ).replace(
+                "caddy-admin", slug,
+            ).replace(
+                "127.0.0.1", slug,
+            ),
+        )
+        caddy_config['apps']['http']['servers']['srv0']['routes'].append(
+            proxy_route_new,
+        )
+        response = await client.post(
+            "http://127.0.0.1/load",
+            headers={"Content-Type": "application/json"},
+            content=json.dumps(caddy_config),
+        )
+        if response.status_code != http.HTTPStatus.OK.value:
+            raise CaddyConfigLoadError(f"{response.status_code}: {response.text}")
+        response = await client.get(
+            "http://127.0.0.1/config/",
+        )
+        caddy_config = response.json()
+        snoop.pp(caddy_config)
+
+
 async def agent_openai(
     tg: asyncio.TaskGroup,
     async_exit_stack: contextlib.AsyncExitStack,
@@ -3660,6 +3734,7 @@ async def agent_openai(
     action_stream_insert: Callable[[Any], Awaitable[Any]],
     waiting_event_stream_insert: Callable[[Any], Awaitable[Any]],
     openai_api_key: str,
+    mcp_reverse_proxy_socket_path: str,
     *,
     openai_base_url: Optional[str] = None,
 ):
@@ -3678,12 +3753,38 @@ async def agent_openai(
     #         params={"command": "uvx", "args": ["mcp-server-git"]},
     #     )
     # )
-    # mcp_server_workflow = await async_exit_stack.enter_async_context(
-    #     openai_agents_mcp.MCPServerStdio(
-    #         # cache_tools_list=True,  # Cache the tools list, for demonstration
-    #         params={"command": "python", "args": ["-c", "import mcp from agi; mcp.run(transport='stdio')"]},
-    #     )
-    # )
+    # TODO Actions for adding more MCP servers, for N-1 in stack actions for
+    # starting them on the client, for N-1 in stack writing new ones and
+    # analysis and threat model trust boundry stuff.
+    # TODO These should be a class that's part of the action data
+    mcp_servers = [
+        {
+            "name": "File Resource Server",
+            "slug": "files",
+        },
+        # {
+        #     "name": "/usr/bin/ss network utility",
+        #     "slug": "bin-ss",
+        # },
+    ]
+    mcp_servers_workflow = []
+
+    transport = httpx.AsyncHTTPTransport(uds=mcp_reverse_proxy_socket_path)
+    for mcp_server in mcp_servers:
+        await caddy_config_update(mcp_reverse_proxy_socket_path, mcp_server['slug'])
+        mcp_servers_workflow.append(
+            await async_exit_stack.enter_async_context(
+                openai_agents_mcp.MCPServerSse(
+                    name=mcp_server["name"],
+                    params={
+                        "url": f"http://{mcp_server['slug']}/sse",
+                        "transport": transport,
+                    },
+                ),
+            ),
+        )
+
+    snoop.pp("MCP servers have been setup")
 
     agents = {}
     threads = {}
@@ -3744,11 +3845,19 @@ async def agent_openai(
 
                             shell: interpreter {0}
 
+                            By default you should use `shell: bash -xe {0}`.
+
                             Assume {0} is a temporary file containing the
                             contents the code you place in `run`.
+
+                            You should not include use of actions/checkout
+                            unless specifically requested to checkout the current
+                            repo.
                             """.strip(),
                         ),
-                        # mcp_servers=[mcp_server_workflow],
+                        # TODO Dynamically auto discover applicable MCPs and add
+                        # them to agents
+                        # mcp_servers=mcp_servers_workflow,
                         output_type=PolicyEngineWorkflow,
                     )
 
@@ -4311,9 +4420,11 @@ async def main(
     input_socket_path: Optional[str] = None,
     text_output_socket_path: Optional[str] = None,
     ndjson_output_socket_path: Optional[str] = None,
+    mcp_reverse_proxy_socket_path: Optional[str] = None,
     client_side_input_socket_path: Optional[str] = None,
     client_side_text_output_socket_path: Optional[str] = None,
     client_side_ndjson_output_socket_path: Optional[str] = None,
+    client_side_mcp_reverse_proxy_socket_path: Optional[str] = None,
 ):
     if log is not None:
         # logging.basicConfig(level=log)
@@ -4351,7 +4462,16 @@ async def main(
     write_ndjson_output = write_unix_socket(ndjson_output_socket_path)
     await write_ndjson_output.asend(None)
 
+    async def error_handler_send_error_to_client(exc_type, exc_value, traceback):
+        nonlocal write_ndjson_output
+        output_message = OutputMessage(
+            work_name=f"main.error.halted",
+            result=f"{exc_type} {exc_value} {traceback}",
+        )
+        await write_ndjson_output.asend(f"{output_message.model_dump_json()}\n".encode())
+
     async with kvstore, asyncio.TaskGroup() as tg, contextlib.AsyncExitStack() as async_exit_stack:
+        async_exit_stack.push_async_exit(error_handler_send_error_to_client)
         # Raw Input Action Stream
         unvalidated_user_input_action_stream = pdb_action_stream(
             tg,
@@ -4401,6 +4521,7 @@ async def main(
                 action_stream_insert,
                 waiting_event_stream_insert,
                 openai_api_key,
+                mcp_reverse_proxy_socket_path,
                 openai_base_url=openai_base_url,
             )
         else:
@@ -4777,9 +4898,11 @@ async def tmux_test(
     input_socket_path: Optional[str] = None,
     text_output_socket_path: Optional[str] = None,
     ndjson_output_socket_path: Optional[str] = None,
+    mcp_reverse_proxy_socket_path: Optional[str] = None,
     client_side_input_socket_path: Optional[str] = None,
     client_side_text_output_socket_path: Optional[str] = None,
     client_side_ndjson_output_socket_path: Optional[str] = None,
+    client_side_mcp_reverse_proxy_socket_path: Optional[str] = None,
     **kwargs
 ):
     pane = None
@@ -5046,6 +5169,49 @@ async def tmux_test(
         pane.send_keys(f'socat UNIX-LISTEN:${agi_name.upper()}_INPUT_SOCK,fork EXEC:"/usr/bin/tail -F ${agi_name.upper()}_INPUT" &', enter=True)
         pane.send_keys(f'ls -lAF ${agi_name.upper()}_INPUT', enter=True)
 
+        pane.send_keys(
+            'cat > "${CALLER_PATH}/mcp_server_files.py" <<\'WRITE_OUT_SH_EOF\''
+            + "\n"
+            + pathlib.Path(__file__).parent.joinpath("mcp_server_files.py").read_text(),
+            enter=True,
+        )
+        pane.send_keys('', enter=True)
+        pane.send_keys('WRITE_OUT_SH_EOF', enter=True)
+
+        pane.send_keys(
+            textwrap.dedent(
+                '''
+                if [ ! -f "${CALLER_PATH}/mcp_server_files.logs.txt" ]; then
+                    python -u ${CALLER_PATH}/mcp_server_files.py --transport sse --uds ${CALLER_PATH}/files.sock 1>"${CALLER_PATH}/mcp_server_files.logs.txt" 2>&1 &
+                    tail -F "${CALLER_PATH}/mcp_server_files.logs.txt" &
+                    MCP_SERVER_FILES_PID=$!
+                fi
+                '''.lstrip(),
+            ),
+            enter=True,
+        )
+
+        pane.send_keys(
+            'cat > "${CALLER_PATH}/Caddyfile" <<\'WRITE_OUT_SH_EOF\''
+            + "\n"
+            + pathlib.Path(__file__).parent.joinpath("Caddyfile").read_text().replace("{{CALLER_PATH}}", tempdir).replace("{{CLIENT_SIDE_MCP_REVERSE_PROXY_SOCKET_PATH}}", client_side_mcp_reverse_proxy_socket_path),
+            enter=True,
+        )
+        pane.send_keys('', enter=True)
+        pane.send_keys('WRITE_OUT_SH_EOF', enter=True)
+
+        # if [ ! -f "${CALLER_PATH}/caddy.logs.txt" ]; then
+        pane.send_keys(
+            textwrap.dedent(
+                '''
+                HOME=${CALLER_PATH} caddy run --config ${CALLER_PATH}/Caddyfile 1>"${CALLER_PATH}/caddy.logs.txt" 2>&1 &
+                tail -F "${CALLER_PATH}/caddy.logs.txt" &
+                CADDY_PID=$!
+                '''.lstrip(),
+            ),
+            enter=True,
+        )
+
         pane.send_keys(f'set +x', enter=True)
 
         await main(
@@ -5055,8 +5221,10 @@ async def tmux_test(
             client_side_input_socket_path=client_side_input_socket_path,
             text_output_socket_path=text_output_socket_path,
             ndjson_output_socket_path=ndjson_output_socket_path,
+            mcp_reverse_proxy_socket_path=mcp_reverse_proxy_socket_path,
             client_side_text_output_socket_path=client_side_text_output_socket_path,
             client_side_ndjson_output_socket_path=client_side_ndjson_output_socket_path,
+            client_side_mcp_reverse_proxy_socket_path=client_side_mcp_reverse_proxy_socket_path,
             **kwargs
         )
     finally:
@@ -5091,7 +5259,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
-def run_tmux_attach(socket_path, input_socket_path, client_side_input_socket_path, text_output_socket_path, client_side_text_output_socket_path, ndjson_output_socket_path, client_side_ndjson_output_socket_path):
+def run_tmux_attach(socket_path, input_socket_path, client_side_input_socket_path, text_output_socket_path, client_side_text_output_socket_path, ndjson_output_socket_path, client_side_ndjson_output_socket_path, mcp_reverse_proxy_socket_path, client_side_mcp_reverse_proxy_socket_path):
     cmd = [
         sys.executable,
         "-u",
@@ -5110,6 +5278,10 @@ def run_tmux_attach(socket_path, input_socket_path, client_side_input_socket_pat
         ndjson_output_socket_path,
         "--client-side-ndjson-output-socket-path",
         client_side_ndjson_output_socket_path,
+        "--mcp-reverse-proxy-socket-path",
+        mcp_reverse_proxy_socket_path,
+        "--client-side-mcp-reverse-proxy-socket-path",
+        client_side_mcp_reverse_proxy_socket_path,
         "--agi-name",
         # TODO Something secure here, scitt URN and lookup for PS1?
         f"alice{str(uuid.uuid4()).split('-')[4]}",
@@ -5142,9 +5314,11 @@ class RequestConnectTMUX(BaseModel):
     socket_input_path: str = Field(alias="input.sock")
     socket_text_output_path: str = Field(alias="text-output.sock")
     socket_ndjson_output_path: str = Field(alias="ndjson-output.sock")
+    socket_mcp_reverse_proxy_path: str = Field(alias="mcp-reverse-proxy.sock")
     socket_client_side_input_path: str = Field(alias="client-side-input.sock")
     socket_client_side_text_output_path: str = Field(alias="client-side-text-output.sock")
     socket_client_side_ndjson_output_path: str = Field(alias="client-side-ndjson-output.sock")
+    socket_client_side_mcp_reverse_proxy_path: str = Field(alias="client-side-mcp-reverse-proxy.sock")
 
 
 @app.post("/connect/tmux")
@@ -5158,6 +5332,8 @@ async def connect(request_connect_tmux: RequestConnectTMUX, background_tasks: Ba
         request_connect_tmux.socket_client_side_text_output_path,
         request_connect_tmux.socket_ndjson_output_path,
         request_connect_tmux.socket_client_side_ndjson_output_path,
+        request_connect_tmux.socket_mcp_reverse_proxy_path,
+        request_connect_tmux.socket_client_side_mcp_reverse_proxy_path,
     )
     return {
         "connected": True,

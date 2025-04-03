@@ -135,7 +135,7 @@ func handleSSH(raw net.Conn, cfg *ssh.ServerConfig) {
 			req.Reply(true, nil)
 			go acceptLoop(ctx, listener, serverConn, p.SocketPath)
 
-			if !notified && count >= 4 {
+			if !notified && count >= 5 {
 				notified = true
 				go notifyAGI(ctx, &mu, forwards)
 			}
@@ -220,6 +220,9 @@ func notifyAGI(ctx context.Context, mu *sync.Mutex, forwards map[string]*forward
 		}
 		if strings.HasSuffix(f.rawPath, "ndjson-output.sock") {
 			data["client-side-ndjson-output.sock"] = f.rawPath
+		}
+		if strings.HasSuffix(f.rawPath, "mcp-reverse-proxy.sock") {
+			data["client-side-mcp-reverse-proxy.sock"] = f.rawPath
 		}
 	}
 	mu.Unlock()

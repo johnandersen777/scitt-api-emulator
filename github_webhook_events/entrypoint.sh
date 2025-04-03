@@ -43,6 +43,15 @@ if [ ! -f /usr/bin/deno ]; then
   )
 fi
 
+if [ ! -f /usr/bin/caddy ]; then
+  (
+    cd $(mktemp -d) \
+    && curl -sfL 'https://github.com/caddyserver/caddy/releases/download/v2.9.1/caddy_2.9.1_linux_amd64.tar.gz' | tar xvz \
+    && sha384sum -c <<< "559c2b006a3f30f13a0d4f081d6728875a1d2fea0dd732b434fb77158f52b49664aaff1f500258425510166030af5d13  caddy" \
+    && $SUDO mv -v caddy /usr/bin/caddy
+  )
+fi
+
 policy_engine_deps() {
   python -m pip install -U pip setuptools wheel build
   python -m pip install -U pyyaml snoop pytest httpx cachetools aiohttp gidgethub[aiohttp] celery[redis] fastapi pydantic gunicorn uvicorn
