@@ -31,7 +31,10 @@ RUN set -x \
 # TODO Caching
 # RUN bash -xec "$(grep 'pip install' /host/agi.py | head -n 1)"
 RUN set -x \
-  && python -m pip install -U pip setuptools wheel snoop openai openai-agents keyring keyrings-alt libtmux psutil
+  && python -m pip install -U pip setuptools wheel snoop openai openai-agents keyring keyrings-alt libtmux psutil \
+  && python -m pip install --force-reinstall \
+       'mcp@git+https://github.com/johnandersen777/python-sdk@mcp_enable_over_unix_socket' \
+       'openai-agents@git+https://github.com/johnandersen777/openai-agents-python@mcp_enable_over_unix_socket'
 
 COPY server_motd /host/
 COPY openai_assistant_instructions.md /host/
