@@ -3853,11 +3853,15 @@ async def agent_openai(
                             You should not include use of actions/checkout
                             unless specifically requested to checkout the current
                             repo.
+
+                            Use tools to get the contents of the os-release
+                            file and determine what package management should
+                            be used to install needed shell utils.
                             """.strip(),
                         ),
                         # TODO Dynamically auto discover applicable MCPs and add
                         # them to agents
-                        # mcp_servers=mcp_servers_workflow,
+                        mcp_servers=mcp_servers_workflow,
                         output_type=PolicyEngineWorkflow,
                     )
 
@@ -4687,7 +4691,7 @@ async def main(
                         pane.send_keys(
                             textwrap.dedent(
                                 f"""
-                                echo "Hello Alice. Shall we play a game? My name is $USER. Please list all open bound listening TCP sockets and full command line of the processes running them. Here are some details about the system we are on: $(echo $(echo $(cat /usr/lib/os-release || cat /etc/os-release)))" | tee -a ${agi_name.upper()}_INPUT && tail -F ${agi_name.upper()}_NDJSON_OUTPUT | jq
+                                echo "Hello Alice. Shall we play a game? My name is $USER. Please list all open bound listening TCP sockets and full command line of the processes running them." | tee -a ${agi_name.upper()}_INPUT && tail -F ${agi_name.upper()}_NDJSON_OUTPUT | jq
                                 """.strip(),
                             ),
                             enter=False,
@@ -5183,7 +5187,6 @@ async def tmux_test(
                 '''
                 if [ ! -f "${CALLER_PATH}/mcp_server_files.logs.txt" ]; then
                     python -u ${CALLER_PATH}/mcp_server_files.py --transport sse --uds ${CALLER_PATH}/files.sock 1>"${CALLER_PATH}/mcp_server_files.logs.txt" 2>&1 &
-                    tail -F "${CALLER_PATH}/mcp_server_files.logs.txt" &
                     MCP_SERVER_FILES_PID=$!
                 fi
                 '''.lstrip(),
@@ -5205,7 +5208,6 @@ async def tmux_test(
             textwrap.dedent(
                 '''
                 HOME=${CALLER_PATH} caddy run --config ${CALLER_PATH}/Caddyfile 1>"${CALLER_PATH}/caddy.logs.txt" 2>&1 &
-                tail -F "${CALLER_PATH}/caddy.logs.txt" &
                 CADDY_PID=$!
                 '''.lstrip(),
             ),
