@@ -5154,14 +5154,12 @@ async def tmux_test(
         pane.send_keys(f"export {agi_name.upper()}_OUTPUT=" + str(pathlib.Path(tempdir, "output.txt")), enter=True)
         pane.send_keys(f'export {agi_name.upper()}_OUTPUT_SOCK="{client_side_text_output_socket_path}"', enter=True)
         pane.send_keys(f'rm -fv ${agi_name.upper()}_OUTPUT_SOCK', enter=True)
-        pane.send_keys(f'ln -s ${agi_name.upper()}_OUTPUT_SOCK', enter=True)
         pane.send_keys(f'socat UNIX-LISTEN:${agi_name.upper()}_OUTPUT_SOCK,fork EXEC:"/usr/bin/tee ${agi_name.upper()}_OUTPUT" &', enter=True)
         pane.send_keys(f'ls -lAF ${agi_name.upper()}_OUTPUT', enter=True)
 
         pane.send_keys(f"export {agi_name.upper()}_NDJSON_OUTPUT=" + str(pathlib.Path(tempdir, "output.ndjson")), enter=True)
         pane.send_keys(f'export {agi_name.upper()}_NDJSON_OUTPUT_SOCK="{client_side_ndjson_output_socket_path}"', enter=True)
         pane.send_keys(f'rm -fv ${agi_name.upper()}_NDJSON_OUTPUT_SOCK', enter=True)
-        pane.send_keys(f'ln -s ${agi_name.upper()}_NDJSON_OUTPUT_SOCK', enter=True)
         pane.send_keys(f'socat UNIX-LISTEN:${agi_name.upper()}_NDJSON_OUTPUT_SOCK,fork EXEC:"/usr/bin/tee ${agi_name.upper()}_NDJSON_OUTPUT" &', enter=True)
         pane.send_keys(f'ls -lAF ${agi_name.upper()}_NDJSON_OUTPUT', enter=True)
 
@@ -5169,7 +5167,6 @@ async def tmux_test(
         pane.send_keys(f'export {agi_name.upper()}_INPUT_SOCK="{client_side_input_socket_path}"', enter=True)
         pane.send_keys(f"export {agi_name.upper()}_INPUT_LAST_LINE=" + str(pathlib.Path(tempdir, "input-last-line.txt")), enter=True)
         pane.send_keys(f'rm -fv ${agi_name.upper()}_INPUT_SOCK', enter=True)
-        pane.send_keys(f'ln -s ${agi_name.upper()}_INPUT_SOCK', enter=True)
         pane.send_keys(f'socat UNIX-LISTEN:${agi_name.upper()}_INPUT_SOCK,fork EXEC:"/usr/bin/tail -F ${agi_name.upper()}_INPUT" &', enter=True)
         pane.send_keys(f'ls -lAF ${agi_name.upper()}_INPUT', enter=True)
 

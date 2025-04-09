@@ -39,6 +39,7 @@ COPY agi.py /host/
 COPY util.sh /host/
 COPY entrypoint-server.sh /host/
 COPY entrypoint.sh /host/
+COPY mcp_server_files.py /host/
 
 RUN set -x \
   && export CALLER_PATH=/host \
