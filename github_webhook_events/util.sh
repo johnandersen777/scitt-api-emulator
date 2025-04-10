@@ -34,6 +34,10 @@ policy_engine_deps() {
   python -m pip install -U pip setuptools wheel build
   python -m pip install -U pyyaml snoop pytest httpx cachetools aiohttp gidgethub[aiohttp] celery[redis] fastapi pydantic gunicorn uvicorn
 
+  # Other deps
+  # - Formatting output as markdown for CLI
+  python -m pip install -U rich
+
   # MCP deps
   python -m pip install -U \
     'mcp-proxy@git+https://github.com/johnandersen777/mcp-proxy@mcp_enable_over_unix_socket'
