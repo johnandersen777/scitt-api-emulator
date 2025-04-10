@@ -33,6 +33,10 @@ submit_policy_engine_request() {
 policy_engine_deps() {
   python -m pip install -U pip setuptools wheel build
   python -m pip install -U pyyaml snoop pytest httpx cachetools aiohttp gidgethub[aiohttp] celery[redis] fastapi pydantic gunicorn uvicorn
+
+  # MCP deps
+  python -m pip install -U \
+    'mcp-proxy@git+https://github.com/johnandersen777/mcp-proxy@mcp_enable_over_unix_socket'
 }
 
 find_listening_ports() {
@@ -59,4 +63,10 @@ find_listening_ports() {
   fi
 
   echo "$LISTENING_PORTS" | awk '{print $4}' | awk -F':' '{print $NF}'
+}
+
+agi() {
+  local input="${AGI_NAME}_INPUT"
+  local ndjson_output="${AGI_NAME}_NDJSON_OUTPUT"
+  tee -a ${!input} && tail -F ${!ndjson_output} | jq
 }

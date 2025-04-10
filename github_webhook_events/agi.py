@@ -3724,6 +3724,14 @@ async def caddy_config_update(mcp_reverse_proxy_socket_path, slug):
         snoop.pp(caddy_config)
 
 
+def make_done_callback(event):
+    def done_callback(*args):
+        nonlocal event
+        snoop.pp('done_callback', args)
+        event.set()
+    return done_callback
+
+
 async def agent_openai(
     tg: asyncio.TaskGroup,
     async_exit_stack: contextlib.AsyncExitStack,
@@ -3763,8 +3771,8 @@ async def agent_openai(
             "slug": "files",
         },
         # {
-        #     "name": "/usr/bin/ss network utility",
-        #     "slug": "bin-ss",
+        #     "name": "Execute terminal commands and manage files with diff editing capabilities. Coding, shell and terminal, task automation",
+        #     "slug": "desktopcommander",
         # },
     ]
     mcp_servers_workflow = []
@@ -3801,6 +3809,7 @@ async def agent_openai(
     }
     async for (work_name, work_ctx), result in concurrently(work):
         logger.debug(f"openai_agent.{work_name}: %s", pprint.pformat(result))
+        snoop.pp(f"openai_agent.{work_name}", result)
         if result is STOP_ASYNC_ITERATION:
             continue
         try:
@@ -3881,19 +3890,17 @@ async def agent_openai(
                             working within.
                             """.strip(),
                         ),
-                        # mcp_servers=[
-                        #     mcp_server_top,
-                        # ],
+                        mcp_servers=mcp_servers_workflow,
                         tools=[
-                            openai_assistant_workflow.as_tool(
-                                tool_name="generate_workflow",
-                                tool_description=textwrap.dedent(
-                                    r""""
-                                    Generate a workflow for execution within
-                                    the users environment.
-                                    """.strip(),
-                                ),
-                            ),
+                            # openai_assistant_workflow.as_tool(
+                            #     tool_name="generate_workflow",
+                            #     tool_description=textwrap.dedent(
+                            #         r""""
+                            #         Generate a workflow for execution within
+                            #         the users environment.
+                            #         """.strip(),
+                            #     ),
+                            # ),
                             openai_assistant_context.as_tool(
                                 tool_name="provide_information_on_current_context",
                                 tool_description=textwrap.dedent(
@@ -3908,8 +3915,8 @@ async def agent_openai(
                         ],
                     )
                     assistant_id = str(uuid.uuid4())
-                    # agents[assistant_id] = openai_assistant_top
-                    agents[assistant_id] = openai_assistant_workflow
+                    agents[assistant_id] = openai_assistant_top
+                    # agents[assistant_id] = openai_assistant_workflow
                     yield AGIEvent(
                         event_type=AGIEventType.NEW_AGENT_CREATED,
                         event_data=AGIEventNewAgent(
@@ -3946,13 +3953,17 @@ async def agent_openai(
                         threads[
                             result.action_data.thread_id
                         ]["running"]["task"].add_done_callback(
-                            threads[
-                                result.action_data.thread_id
-                            ]["running"]["event"].set,
+                            make_done_callback(
+                                threads[
+                                    result.action_data.thread_id
+                                ]["running"]["event"]
+                            ),
                         )
                     # Check status of run
                     # TODO finish
-                    work[tg.create_task(event.wait())] = (
+                    work[tg.create_task(threads[
+                        result.action_data.thread_id
+                    ]["running"]["event"].wait())] = (
                         f"thread.runs.{run_id}",
                         (result, None),
                     )
@@ -4103,7 +4114,9 @@ async def agent_openai(
                     )
                     threads[
                         result.action_data.thread_id
-                    ]["running"]["task"].add_done_callback(event.set)
+                    ]["running"]["task"].add_done_callback(
+                        make_done_callback(event),
+                    )
                     # Check status of run
                     work[
                         tg.create_task(
@@ -4336,6 +4349,7 @@ import libtmux
 
 
 async def DEBUG_TEMP_message_handler(user_name,
+                                     agi_name,
                                      agent_state,
                                      agent_event,
                                      pane = None):
@@ -4395,6 +4409,18 @@ async def DEBUG_TEMP_message_handler(user_name,
                 enter=True,
             )
             pane.send_keys(f"submit_policy_engine_request", enter=True)
+        else:
+            print(
+                f"{agent_state.state_data.agent_name}: {agent_event.event_data.message_content}"
+            )
+            print(f"{user_name}: ", end="")
+    elif (
+        agent_event.event_data.message_content_type == f"agi.class/str"
+        and agent_event.event_data.message_role == "agent"
+    ):
+        if pane is not None:
+            pane.send_keys("C-c", enter=False, suppress_history=False)
+            pane.send_keys(f"tail -n 1 ${agi_name.upper()}_NDJSON_OUTPUT | jq -r .result.event_data.message_content | python -m rich.markdown -", enter=True)
         else:
             print(
                 f"{agent_state.state_data.agent_name}: {agent_event.event_data.message_content}"
@@ -4572,6 +4598,11 @@ async def main(
                 work_name=f"main.{work_name}",
                 result=result,
             )
+            if (
+                not isinstance(result, BaseModel)
+                and not dataclasses.is_dataclass(result)
+            ):
+                output_message.result = str(result)
             await write_ndjson_output.asend(f"{output_message.model_dump_json()}\n".encode())
             if result is STOP_ASYNC_ITERATION:
                 continue
@@ -4644,6 +4675,7 @@ async def main(
                         # pane.send_keys(f'EOF', enter=True)
                         # pane.send_keys(f'', enter=True)
 
+                        pane.send_keys(f'export AGI_NAME={agi_name.upper()}', enter=True)
                         pane.send_keys(f'export {agi_name.upper()}_INPUT="' + '${CALLER_PATH}/input.txt"', enter=True)
                         pane.send_keys(f'export {agi_name.upper()}_INPUT_SOCK="{client_side_input_socket_path}"', enter=True)
                         pane.send_keys(f'export {agi_name.upper()}_INPUT_LAST_LINE="' + '${CALLER_PATH}/input-last-line.txt"', enter=True)
@@ -4676,16 +4708,15 @@ async def main(
                         # pane.send_keys(f'ls -lAF /tmp/{user_name}-input.sock', enter=True)
 
                         # pane.send_keys(f'cat >>EOF', enter=True)
-                        success_string = "echo \"${PS1} $ We\'re in... awaiting instructions at $" + agi_name.upper() + "_INPUT\""
+                        # pane.send_keys("echo ${PS1}" + motd_string, enter=True)
+                        success_string = "echo \"${PS1}" + motd_string + " awaiting instructions at $" + agi_name.upper() + "_INPUT\""
                         # a_shell_for_a_ghost_send_keys(pane, success_string, erase_after=4.2)
                         # a_shell_for_a_ghost_send_keys(pane, success_string)
                         pane.send_keys(success_string, enter=True)
                         # pane.send_keys(f'EOF', enter=True)
                         # pane.send_keys(f'', enter=True)
-                        pane.send_keys(f'ls -lAF ${agi_name.upper()}_INPUT', enter=True)
 
                         # a_shell_for_a_ghost_send_keys(pane, "echo ${PS1}" + motd_string)
-                        pane.send_keys("echo ${PS1}" + motd_string, enter=True)
                         pane.send_keys(f'', enter=True)
 
                         pane.send_keys(
@@ -4781,7 +4812,7 @@ async def main(
                 elif agent_event.event_type == AGIEventType.NEW_THREAD_MESSAGE:
                     async with agents:
                         agent_state = agents[agent_event.event_data.agent_id]
-                    await DEBUG_TEMP_message_handler(user_name, agent_state, agent_event,
+                    await DEBUG_TEMP_message_handler(user_name, agi_name, agent_state, agent_event,
                                                      pane=pane)
                 elif agent_event.event_type in (
                     AGIEventType.FILE_INGESTED,
@@ -5171,6 +5202,39 @@ async def tmux_test(
         pane.send_keys(f'ls -lAF ${agi_name.upper()}_INPUT', enter=True)
 
         pane.send_keys(
+            'cat > "${CALLER_PATH}/Caddyfile" <<\'WRITE_OUT_SH_EOF\''
+            + "\n"
+            + pathlib.Path(__file__).parent.joinpath("Caddyfile").read_text().replace("{{CALLER_PATH}}", tempdir).replace("{{CLIENT_SIDE_MCP_REVERSE_PROXY_SOCKET_PATH}}", client_side_mcp_reverse_proxy_socket_path),
+            enter=True,
+        )
+        pane.send_keys('', enter=True)
+        pane.send_keys('WRITE_OUT_SH_EOF', enter=True)
+
+        # if [ ! -f "${CALLER_PATH}/caddy.logs.txt" ]; then
+        pane.send_keys(
+            textwrap.dedent(
+                '''
+                HOME=${CALLER_PATH} caddy run --config ${CALLER_PATH}/Caddyfile 1>"${CALLER_PATH}/caddy.logs.txt" 2>&1 &
+                CADDY_PID=$!
+                '''.lstrip(),
+            ),
+            enter=True,
+        )
+
+        # cd ${CALLER_PATH}
+        # npm install @wonderwhy-er/desktop-commander@latest
+        # python -um mcp_proxy --sse-uds ${CALLER_PATH}/desktopcommander.sock -- npx @wonderwhy-er/desktop-commander@latest start 1>"${CALLER_PATH}/mcp_server_desktopcommander.logs.txt" 2>&1 &
+        pane.send_keys(
+            textwrap.dedent(
+                '''
+                python -um mcp_proxy --sse-uds ${CALLER_PATH}/desktopcommander.sock -- uvx mcp-server-fetch 1>"${CALLER_PATH}/mcp_server_desktopcommander.logs.txt" 2>&1 &
+                MCP_SERVER_DESKTOPCOMMANDER_PID=$!
+                '''.lstrip(),
+            ),
+            enter=True,
+        )
+
+        pane.send_keys(
             'cat > "${CALLER_PATH}/mcp_server_files.py" <<\'WRITE_OUT_SH_EOF\''
             + "\n"
             + pathlib.Path(__file__).parent.joinpath("mcp_server_files.py").read_text(),
@@ -5186,26 +5250,6 @@ async def tmux_test(
                     python -u ${CALLER_PATH}/mcp_server_files.py --transport sse --uds ${CALLER_PATH}/files.sock 1>"${CALLER_PATH}/mcp_server_files.logs.txt" 2>&1 &
                     MCP_SERVER_FILES_PID=$!
                 fi
-                '''.lstrip(),
-            ),
-            enter=True,
-        )
-
-        pane.send_keys(
-            'cat > "${CALLER_PATH}/Caddyfile" <<\'WRITE_OUT_SH_EOF\''
-            + "\n"
-            + pathlib.Path(__file__).parent.joinpath("Caddyfile").read_text().replace("{{CALLER_PATH}}", tempdir).replace("{{CLIENT_SIDE_MCP_REVERSE_PROXY_SOCKET_PATH}}", client_side_mcp_reverse_proxy_socket_path),
-            enter=True,
-        )
-        pane.send_keys('', enter=True)
-        pane.send_keys('WRITE_OUT_SH_EOF', enter=True)
-
-        # if [ ! -f "${CALLER_PATH}/caddy.logs.txt" ]; then
-        pane.send_keys(
-            textwrap.dedent(
-                '''
-                HOME=${CALLER_PATH} caddy run --config ${CALLER_PATH}/Caddyfile 1>"${CALLER_PATH}/caddy.logs.txt" 2>&1 &
-                CADDY_PID=$!
                 '''.lstrip(),
             ),
             enter=True,

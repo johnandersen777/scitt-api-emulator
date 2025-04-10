@@ -33,6 +33,7 @@ RUN set -x \
 RUN set -x \
   && python -m pip install -U pip setuptools wheel snoop openai openai-agents keyring keyrings-alt libtmux psutil \
   && python -m pip install --force-reinstall \
+       'mcp-proxy@git+https://github.com/johnandersen777/mcp-proxy@mcp_enable_over_unix_socket' \
        'mcp@git+https://github.com/johnandersen777/python-sdk@mcp_enable_over_unix_socket' \
        'openai-agents@git+https://github.com/johnandersen777/openai-agents-python@additional_properties_dict_keys_mcp_enable_over_unix_socket'
 

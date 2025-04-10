@@ -51,7 +51,7 @@ def main(port: int, transport: str, uds: str) -> int:
 
 
     @mcp.tool()
-    def get_files() -> str:
+    def get_files() -> list[str]:
         print("[debug-server] get_files()")
         return list(SAMPLE_RESOURCES.keys())
 
