@@ -4741,12 +4741,22 @@ async def main(
                         # pane.send_keys(f'', enter=True)
 
                         # a_shell_for_a_ghost_send_keys(pane, "echo ${PS1}" + motd_string)
+
+                        pane.send_keys(
+                            "echo ${PS1}" +
+                            textwrap.dedent(
+                                f"""
+                                'echo "Query for AGI" | tee -a ${agi_name.upper()}_INPUT && tail -F ${agi_name.upper()}_NDJSON_OUTPUT | jq'
+                                """.strip(),
+                            ),
+                            enter=True,
+                        )
                         pane.send_keys(f'', enter=True)
 
                         pane.send_keys(
                             textwrap.dedent(
                                 f"""
-                                echo "Hello Alice. Shall we play a game? My name is $USER. Please list all open bound listening TCP sockets and full command line of the processes running them." | tee -a ${agi_name.upper()}_INPUT && tail -F ${agi_name.upper()}_NDJSON_OUTPUT | jq
+                                echo "Hello Alice. Shall we play a game? My name is $USER. Please list all open bound listening TCP sockets and full command line of the processes running them." | agi
                                 """.strip(),
                             ),
                             enter=False,
