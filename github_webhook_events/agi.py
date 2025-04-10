@@ -3809,7 +3809,7 @@ async def agent_openai(
     }
     async for (work_name, work_ctx), result in concurrently(work):
         logger.debug(f"openai_agent.{work_name}: %s", pprint.pformat(result))
-        snoop.pp(f"openai_agent.{work_name}", result)
+        # snoop.pp(f"openai_agent.{work_name}", result)
         if result is STOP_ASYNC_ITERATION:
             continue
         try:
@@ -3987,14 +3987,34 @@ async def agent_openai(
                                     input=threads[action_data_run_thread.thread_id]["messages"],
                                     context=user_context,
                                 )
-                                more_events = True
+                                num_events = 0
+                                no_more_events = asyncio.Event()
                                 event_queue = asyncio.Queue()
                                 events = threads[action_data_run_thread.thread_id]["events"]
                                 async def stream_get_thread_messages():
-                                    nonlocal more_events
+                                    events_received = 0
+                                    nonlocal num_events
+                                    nonlocal no_more_events
                                     nonlocal event_queue
-                                    while more_events:
-                                        yield await event_queue.get()
+                                    more_events = True
+                                    work = {
+                                        tg.create_task(event_queue.get()): "event_queue",
+                                        tg.create_task(no_more_events.wait()): "no_more_events",
+                                    }
+                                    try:
+                                        async for work_name, result in concurrently(work):
+                                            if work_name == "event_queue":
+                                                events_received += 1
+                                                if more_events or num_events > events_received:
+                                                    work[tg.create_task(event_queue.get())] = "event_queue"
+                                                yield result
+                                            elif work_name == "no_more_events":
+                                                more_events = False
+                                                if num_events >= events_received:
+                                                    for task in work:
+                                                        task.cancel()
+                                    except asyncio.CancelledError:
+                                        pass
 
                                 thread_messages = stream_get_thread_messages()
                                 thread_messages_iter = thread_messages.__aiter__()
@@ -4011,13 +4031,16 @@ async def agent_openai(
 
                                 try:
                                     async for event in result.stream_events():
+                                        num_events += 1
                                         events.append(event)
                                         await event_queue.put(event)
+                                    num_events += 1
                                     events.append(result)
+                                    threads[action_data_run_thread.thread_id]["running"] = None
+                                    threads[action_data_run_thread.thread_id]["messages"] = result.to_input_list()
                                     await event_queue.put(result)
                                 finally:
-                                    await event_queue.join()
-                                    more_events = False
+                                    no_more_events.set()
 
                                 return result
                             return run_it
@@ -4075,6 +4098,7 @@ async def agent_openai(
                         }
                     )
                     message_id = len(thread["messages"]) - 1
+                    snoop.pp(thread["messages"])
                     yield AGIEvent(
                         event_type=AGIEventType.THREAD_MESSAGE_ADDED,
                         event_data=AGIEventThreadMessageAdded(
@@ -4829,23 +4853,28 @@ async def main(
                 ] = (work_name, work_ctx)
                 user_input = result
                 snoop.pp(user_input)
-                waiting.append(
-                    (
-                        # OR is array, AND is dict values
-                        [
-                            AGIEventType.NEW_AGENT_CREATED,
-                            AGIEventType.EXISTING_AGENT_RETRIEVED,
-                        ],
-                        async_lambda(
-                            lambda: AGIAction(
-                                action_type=AGIActionType.NEW_THREAD,
-                                action_data=AGIActionNewThread(
-                                    agent_id=agents.currently.state_data.agent_id,
+                async with threads:
+                    thread = threads.currently
+                if thread is CURRENTLY_UNDEFINED:
+                    waiting.append(
+                        (
+                            # OR is array, AND is dict values
+                            [
+                                AGIEventType.NEW_AGENT_CREATED,
+                                AGIEventType.EXISTING_AGENT_RETRIEVED,
+                            ],
+                            async_lambda(
+                                lambda: AGIAction(
+                                    action_type=AGIActionType.NEW_THREAD,
+                                    action_data=AGIActionNewThread(
+                                        agent_id=agents.currently.state_data.agent_id,
+                                    ),
                                 ),
-                            ),
+                            )
                         )
                     )
-                )
+                if AGIEventType.THREAD_MESSAGE_ADDED in previous_event_types:
+                    previous_event_types.remove(AGIEventType.THREAD_MESSAGE_ADDED)
                 waiting.append(
                     (
                         AGIEventType.NEW_THREAD_CREATED,
