@@ -3514,6 +3514,7 @@ class MetadataWrapper(BaseModel):
 class TmuxContext(BaseModel):
     active_pane: str = Field(default="Active pane unknown")
     session: Any = Field(exclude=True, default=None)
+    pane: Any = Field(exclude=True, default=None)
     sessions: Dict[str, dict] = Field(default_factory=dict)
 
 # -----------------------------
@@ -3658,6 +3659,64 @@ async def fetch_user_tmux_session(wrapper: RunContextWrapper[UserContext]) -> st
     return f"User terminal multiplexer context is {tmux_context.model_dump_json()}"
 
 
+# TODO We should reverse proxy the policy engine service and enable output
+# capture of workflow execution, is there already streaming of output? We want
+# it so we can return it from this tool
+@function_tool
+async def execute_generated_workflow(
+    wrapper: RunContextWrapper[UserContext],
+    workflow: PolicyEngineWorkflow,
+) -> str:
+    snoop.pp("execute_generated_workflow", workflow)
+    tmux_context = wrapper.context.tmux_context
+    pane = tmux_context.pane
+    if pane is not None:
+        session = pane.window.session
+        tempdir_lookup_env_var = f'TEMPDIR_ENV_VAR_TMUX_WINDOW_{session.active_window.id.replace("@", "")}'
+        tempdir_env_var  = pane.window.session.show_environment()[tempdir_lookup_env_var]
+        tempdir = pathlib.Path(
+            pane.window.session.show_environment()[tempdir_env_var],
+        )
+        # Proposed workflow to be submitted to policy engine to get clear
+        # for take off (aka workload id and exec in phase 0). Executing the
+        # policy aka the workflow (would be the one we insert to once
+        # paths can be mapped to poliy engine workflows easily
+        proposed_workflow_contents = yaml.dump(
+            json.loads(workflow.model_dump_json()),
+            default_flow_style=False,
+            sort_keys=True,
+        )
+        request_contents = yaml.dump(
+            json.loads(
+                PolicyEngineRequest(
+                    inputs={},
+                    context={},
+                    stack={},
+                    workflow=workflow,
+                ).model_dump_json(),
+            )
+        )
+        # Find and kill jq listening to ndjson output so we can type
+        pane.send_keys("C-c", enter=False, suppress_history=False)
+        pane.send_keys('if [ "x${CALLER_PATH}" = "x" ]; then export CALLER_PATH="' + str(tempdir) + '"; fi', enter=True)
+        pane.send_keys(
+            "cat > \"${CALLER_PATH}/proposed-workflow.yml\" <<\'WRITE_OUT_SH_EOF\'"
+            + "\n"
+            + proposed_workflow_contents
+            + "\nWRITE_OUT_SH_EOF",
+            enter=True,
+        )
+        pane.send_keys(
+            "cat > \"${CALLER_PATH}/request.yml\" <<\'WRITE_OUT_SH_EOF\'"
+            + "\n"
+            + request_contents
+            + "\nWRITE_OUT_SH_EOF",
+            enter=True,
+        )
+        pane.send_keys(f"submit_policy_engine_request", enter=True)
+    return f"User terminal multiplexer context is {tmux_context.model_dump_json()}"
+
+
 class AGIThreadNotFoundError(Exception):
     pass
 
@@ -3775,12 +3834,12 @@ async def agent_openai(
         #     "slug": "desktopcommander",
         # },
     ]
-    mcp_servers_workflow = []
+    mcp_servers_top = []
 
     transport = httpx.AsyncHTTPTransport(uds=mcp_reverse_proxy_socket_path)
     for mcp_server in mcp_servers:
         await caddy_config_update(mcp_reverse_proxy_socket_path, mcp_server['slug'])
-        mcp_servers_workflow.append(
+        mcp_servers_top.append(
             await async_exit_stack.enter_async_context(
                 openai_agents_mcp.MCPServerSse(
                     name=mcp_server["name"],
@@ -3844,6 +3903,9 @@ async def agent_openai(
                             tools to help a user who needs you to generate
                             GitHub Actions schema compliant workflows.
 
+                            The output must always contain at least one job with
+                            at least one step.
+
                             You may use tools to generate Actions if you
                             cannot find ones that are applicable to your
                             needs. If an Action would be too heavyweight,
@@ -3870,7 +3932,7 @@ async def agent_openai(
                         ),
                         # TODO Dynamically auto discover applicable MCPs and add
                         # them to agents
-                        mcp_servers=mcp_servers_workflow,
+                        # mcp_servers=mcp_servers_workflow,
                         output_type=PolicyEngineWorkflow,
                     )
 
@@ -3894,17 +3956,25 @@ async def agent_openai(
                             commands, etc. specific commands.
                             """.strip(),
                         ),
-                        mcp_servers=mcp_servers_workflow,
+                        mcp_servers=mcp_servers_top,
                         tools=[
-                            # openai_assistant_workflow.as_tool(
-                            #     tool_name="generate_workflow",
-                            #     tool_description=textwrap.dedent(
-                            #         r""""
-                            #         Generate a workflow for execution within
-                            #         the users environment.
-                            #         """.strip(),
-                            #     ),
-                            # ),
+                            execute_generated_workflow,
+                            openai_assistant_workflow.as_tool(
+                                tool_name="generate_and_run_as_workflow",
+                                tool_description=textwrap.dedent(
+                                    r""""
+                                    Generate a workflow for execution within
+                                    the users environment. If the user asks for
+                                    something to be run or executed, use this
+                                    tool. First distil information about the
+                                    environment to send a complete prompt to
+                                    this tool. Take the output of this tool and
+                                    feed it to execute_generated_workflow to run
+                                    commands and do things within the users
+                                    context.
+                                    """.strip(),
+                                ),
+                            ),
                             openai_assistant_context.as_tool(
                                 tool_name="provide_information_on_current_context",
                                 tool_description=textwrap.dedent(
@@ -4494,6 +4564,7 @@ async def main(
     user_context = UserContext(
         tmux_context=TmuxContext(
             session=None if pane is None else pane.session,
+            pane=None if pane is None else pane,
         ),
     )
 
