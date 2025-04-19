@@ -4831,7 +4831,7 @@ async def main(
                         pane.send_keys(
                             textwrap.dedent(
                                 f"""
-                                echo "Hello Alice. Shall we play a game? My name is $USER. Please list all open bound listening TCP sockets and full command line of the processes running them." | agi
+                                echo "Hello Alice. Shall we play a game? My name is $USER. Please execute to find a list of all open bound listening TCP sockets and full command line of the processes running them." | agi
                                 """.strip(),
                             ),
                             enter=False,
