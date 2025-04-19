@@ -3887,7 +3887,11 @@ async def agent_openai(
                             when calling tools. Shell contexts contain
                             information about running processes the user is
                             observing as well as what Git repos the user is
-                            working within.
+                            working within. You must also use tools to
+                            understand what OS the user is on to inform your
+                            responses if they might be OS specific. This means
+                            reading the os-release file for any install
+                            commands, etc. specific commands.
                             """.strip(),
                         ),
                         mcp_servers=mcp_servers_workflow,
