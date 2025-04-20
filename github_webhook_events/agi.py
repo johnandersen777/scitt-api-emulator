@@ -3954,24 +3954,34 @@ async def agent_openai(
                             responses if they might be OS specific. This means
                             reading the os-release file for any install
                             commands, etc. specific commands.
+
+                            IMPORTANT! You MUST generate and execute workflows
+                            using the generate_workflow and
+                            execute_generated_workflow tools if the user asks
+                            you to run or execute. IMPORTANT!
                             """.strip(),
                         ),
                         mcp_servers=mcp_servers_top,
                         tools=[
                             execute_generated_workflow,
                             openai_assistant_workflow.as_tool(
-                                tool_name="generate_and_run_as_workflow",
+                                tool_name="generate_workflow",
                                 tool_description=textwrap.dedent(
                                     r""""
                                     Generate a workflow for execution within
-                                    the users environment. If the user asks for
-                                    something to be run or executed, use this
-                                    tool. First distil information about the
+                                    the users environment.
+
+                                    IMPORTANT! If the user asks for something to
+                                    be run or executed, use this tool IMPORTANT!
+
+                                    First distil information about the
                                     environment to send a complete prompt to
-                                    this tool. Take the output of this tool and
+                                    this tool.
+
+                                    IMPORTANT! Take the output of this tool and
                                     feed it to execute_generated_workflow to run
                                     commands and do things within the users
-                                    context.
+                                    context IMPORTANT!
                                     """.strip(),
                                 ),
                             ),
@@ -4831,7 +4841,7 @@ async def main(
                         pane.send_keys(
                             textwrap.dedent(
                                 f"""
-                                echo "Hello Alice. Shall we play a game? My name is $USER. Please execute to find a list of all open bound listening TCP sockets and full command line of the processes running them." | agi
+                                echo "Hello Alice. Shall we play a game? My name is $USER. Please run/execute to find a list of all open bound listening TCP sockets and full command line of the processes running them." | agi
                                 """.strip(),
                             ),
                             enter=False,
